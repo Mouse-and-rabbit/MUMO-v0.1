@@ -12,6 +12,8 @@ dependencies:
   - autodock-vina      # provides the 'vina' command on PATH
   - plip               # bioconda — installs cleanly with its openbabel dep (no pip build)
   - numpy
+  - scipy              # required by meeko (meeko declares no deps, so we add them)
+  - gemmi              # required by meeko's receptor preparation
   - pandas
   - lxml
   - pip
