@@ -1,0 +1,22 @@
+name: mumo
+# Conda environment for deploying MUMO on Streamlit Community Cloud (Linux).
+# conda-forge / bioconda give us the native tools (Vina, OpenBabel, RDKit)
+# pre-built, so nothing has to compile on the cloud.
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - rdkit
+  - openbabel          # includes InChI on conda-forge (no shim needed)
+  - autodock-vina      # provides the 'vina' command on PATH
+  - numpy
+  - pandas
+  - lxml
+  - pip
+  - pip:
+      - streamlit
+      - meeko
+      - py3Dmol
+      - requests
+      - plip
