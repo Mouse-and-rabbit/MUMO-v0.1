@@ -9,6 +9,7 @@ ensure_vina() returns a usable AutoDock Vina executable path:
 """
 
 import os
+import sys
 import stat
 import shutil
 import platform
@@ -30,10 +31,13 @@ def ensure_vina():
     if platform.system() == "Windows":
         return os.path.join(BIN, "vina.exe")
 
-    # Linux/Mac: prefer an already-installed vina.
+    # Linux/Mac: prefer an already-installed vina (PATH, or the conda/venv bin).
     on_path = shutil.which("vina")
     if on_path:
         return on_path
+    conda_vina = os.path.join(os.path.dirname(sys.executable), "vina")
+    if os.path.exists(conda_vina):
+        return conda_vina
 
     # Otherwise download the static Linux binary once and cache it.
     local = os.path.join(BIN, "vina")

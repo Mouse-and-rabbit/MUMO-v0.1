@@ -14,15 +14,21 @@ from meeko import MoleculePreparation, PDBQTWriterLegacy
 def _resolve_executable(name, hint_dir=None):
     """
     Find a command-line tool across operating systems.
-    Order: (1) on the system PATH, (2) inside hint_dir as 'name' or 'name.exe'.
-    This lets the same code run on Windows (local) and Linux (cloud).
+    Order:
+      (1) on the system PATH,
+      (2) next to the Python interpreter (conda/venv 'bin' or 'Scripts' folder) —
+          this is where pip/conda console scripts like mk_prepare_receptor live,
+      (3) inside the optional hint_dir.
+    Checks both 'name' and 'name.exe'. Works on Windows (local) and Linux (cloud).
     """
     found = shutil.which(name)
     if found:
         return found
+    search_dirs = [os.path.dirname(sys.executable)]
     if hint_dir:
-        for candidate in (os.path.join(hint_dir, name),
-                          os.path.join(hint_dir, name + ".exe")):
+        search_dirs.append(hint_dir)
+    for d in search_dirs:
+        for candidate in (os.path.join(d, name), os.path.join(d, name + ".exe")):
             if os.path.exists(candidate):
                 return candidate
     return None
