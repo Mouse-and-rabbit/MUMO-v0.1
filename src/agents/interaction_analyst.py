@@ -23,29 +23,50 @@ HOW IT WORKS
 """
 
 import os
-import openbabel.pybel as pybel
 
-# ── Compatibility shim ───────────────────────────────────────────────────────
-# The prebuilt OpenBabel wheel on Windows has no InChI support, but PLIP asks
-# OpenBabel for an 'inchikey' (just to label the ligand). RDKit *does* have
-# InChI, so we redirect only those two formats to RDKit. Everything else is
-# untouched. This keeps PLIP fully working without changing PLIP itself.
-_orig_write = pybel.Molecule.write
-def _write_with_rdkit_inchi(self, format="smi", filename=None, *args, **kwargs):
-    if format in ("inchikey", "inchi") and filename is None:
-        try:
-            from rdkit import Chem
-            molblock = _orig_write(self, "mol")
-            m = Chem.MolFromMolBlock(molblock, sanitize=False)
-            if m is not None:
-                return Chem.MolToInchiKey(m) if format == "inchikey" else Chem.MolToInchi(m)
-        except Exception:
-            pass
-        return "NOINCHIKEY"   # harmless fallback label; PLIP still works
-    return _orig_write(self, format, filename, *args, **kwargs)
-pybel.Molecule.write = _write_with_rdkit_inchi
+# ── Resilient imports ────────────────────────────────────────────────────────
+# Interaction profiling needs OpenBabel + PLIP. If either is missing (e.g. a
+# cloud build hiccup), MUMO must NOT crash — docking still works, we just skip
+# the interaction details. INTERACTIONS_AVAILABLE tells the rest of the app.
+INTERACTIONS_AVAILABLE = True
+_IMPORT_ERROR = ""
+try:
+    import openbabel.pybel as pybel
 
-from plip.structure.preparation import PDBComplex
+    # Compatibility shim: some OpenBabel builds lack InChI, but PLIP asks for an
+    # 'inchikey' (just a label). RDKit has InChI, so we redirect those calls.
+    _orig_write = pybel.Molecule.write
+    def _write_with_rdkit_inchi(self, format="smi", filename=None, *args, **kwargs):
+        if format in ("inchikey", "inchi") and filename is None:
+            try:
+                from rdkit import Chem
+                molblock = _orig_write(self, "mol")
+                m = Chem.MolFromMolBlock(molblock, sanitize=False)
+                if m is not None:
+                    return Chem.MolToInchiKey(m) if format == "inchikey" else Chem.MolToInchi(m)
+            except Exception:
+                pass
+            return "NOINCHIKEY"
+        return _orig_write(self, format, filename, *args, **kwargs)
+    pybel.Molecule.write = _write_with_rdkit_inchi
+
+    from plip.structure.preparation import PDBComplex
+except Exception as _e:                      # pragma: no cover
+    INTERACTIONS_AVAILABLE = False
+    _IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
+
+
+def _empty_result(note):
+    """A zeroed interaction result so the app keeps working when PLIP is absent."""
+    return {
+        "total_interactions": 0, "n_hbonds": 0, "hbond_residues": [],
+        "n_hydrophobic": 0, "hydrophobic_residues": [],
+        "n_pistacking": 0, "pistacking_residues": [],
+        "n_saltbridges": 0, "saltbridge_residues": [],
+        "n_halogen": 0, "n_pication": 0, "n_waterbridges": 0,
+        "interacting_residues": [], "lines": [], "residue_numbers": [],
+        "note": note,
+    }
 
 
 def _ligand_pose_to_pdb_block(ligand_pdbqt):
@@ -125,7 +146,19 @@ def _extract_lines(site):
 def analyze_interactions(receptor_pdb, ligand_pdbqt, out_complex_pdb):
     """
     Full analysis. Returns a dictionary of interaction details for the docked pose.
+    Never raises — if PLIP is unavailable or analysis fails, returns zeros so the
+    rest of MUMO (docking, scores, 3D view) keeps working.
     """
+    if not INTERACTIONS_AVAILABLE:
+        return _empty_result(f"Interaction profiling unavailable ({_IMPORT_ERROR}).")
+
+    try:
+        return _run_plip(receptor_pdb, ligand_pdbqt, out_complex_pdb)
+    except Exception as e:
+        return _empty_result(f"Interaction analysis skipped: {e}")
+
+
+def _run_plip(receptor_pdb, ligand_pdbqt, out_complex_pdb):
     build_complex(receptor_pdb, ligand_pdbqt, out_complex_pdb)
 
     complex_mol = PDBComplex()

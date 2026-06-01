@@ -10,6 +10,7 @@ dependencies:
   - rdkit
   - openbabel          # includes InChI on conda-forge (no shim needed)
   - autodock-vina      # provides the 'vina' command on PATH
+  - plip               # bioconda — installs cleanly with its openbabel dep (no pip build)
   - numpy
   - pandas
   - lxml
@@ -19,4 +20,3 @@ dependencies:
       - meeko
       - py3Dmol
       - requests
-      - plip
