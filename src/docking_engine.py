@@ -108,17 +108,14 @@ def prepare_receptor(cleaned_pdb_path, output_pdbqt_path, venv_bin_dir):
     Uses Meeko's mk_prepare_receptor tool to add atom types and gasteiger charges.
     """
     print(f"[Prep] Preparing receptor using Meeko...")
-    # Find mk_prepare_receptor on PATH (Linux/cloud) or in the venv folder (Windows).
-    prep_exec = _resolve_executable("mk_prepare_receptor", venv_bin_dir)
-    if not prep_exec:
-        raise FileNotFoundError("Could not find 'mk_prepare_receptor' (install meeko).")
-
-    # We specify the output directory and base name
+    # Call Meeko as a Python module ('python -m meeko.cli.mk_prepare_receptor').
+    # This is bulletproof across OSes — no need to locate a console-script file,
+    # which Meeko names inconsistently (e.g. 'mk_prepare_receptor.py').
     output_dir = os.path.dirname(output_pdbqt_path)
     output_basename = os.path.join(output_dir, "temp_receptor")
-    
+
     cmd = [
-        prep_exec,
+        sys.executable, "-m", "meeko.cli.mk_prepare_receptor",
         "--read_pdb", cleaned_pdb_path,
         "-o", output_basename,
         "-p"  # Write PDBQT file
