@@ -9,7 +9,7 @@ browser — like the pose view in Maestro/PyMOL. Fully customisable: protein sty
 colors, background, surface opacity, and what to show.
 """
 
-import py3Dmol
+import json as _json   # only the lightweight CDN viewer is used now (no py3Dmol embed)
 
 # Default look — a sensible starting point the user can change in the UI.
 DEFAULTS = {
@@ -43,89 +43,137 @@ def _protein_color_spec(name):
     return {"color": {"grey": "lightgrey", "white": "white"}.get(name, "lightgrey")}
 
 
+def _crop_to_pocket(pdb_text, cutoff=14.0):
+    """
+    Keep only the binding-site region: protein residues with any atom within
+    `cutoff` Å of the ligand, plus the ligand. Drops the rest of the protein so
+    the viewer payload stays tiny regardless of protein size (cloud-friendly),
+    and gives a clean pocket close-up. Falls back to the full PDB if no ligand.
+    """
+    lines = pdb_text.splitlines()
+    lig = []
+    for ln in lines:
+        if ln.startswith("HETATM") and ln[17:20].strip() == "LIG":
+            try:
+                lig.append((float(ln[30:38]), float(ln[38:46]), float(ln[46:54])))
+            except ValueError:
+                pass
+    if not lig:
+        return pdb_text
+
+    res_lines, res_coords, hetatm = {}, {}, []
+    for ln in lines:
+        if ln.startswith("ATOM"):
+            key = (ln[21], ln[22:26])
+            res_lines.setdefault(key, []).append(ln)
+            try:
+                res_coords.setdefault(key, []).append(
+                    (float(ln[30:38]), float(ln[38:46]), float(ln[46:54])))
+            except ValueError:
+                pass
+        elif ln.startswith("HETATM") or ln.startswith("END"):
+            hetatm.append(ln)
+
+    cut2 = cutoff * cutoff
+    kept = []
+    for key, coords in res_coords.items():
+        near = any((x-lx)**2 + (y-ly)**2 + (z-lz)**2 <= cut2
+                   for (x, y, z) in coords for (lx, ly, lz) in lig)
+        if near:
+            kept.extend(res_lines[key])
+    return "\n".join(kept + ["TER"] + hetatm) + "\n"
+
+
 def render_complex_html(complex_pdb_path, ia, options=None, width=900, height=560):
     """
-    complex_pdb_path : protein+ligand 'complex' PDB (ligand = residue 'LIG')
-    ia               : dict from analyze_interactions() (has 'lines', 'residue_numbers')
-    options          : dict overriding DEFAULTS (the visualisation settings)
+    Build a LIGHTWEIGHT interactive 3D viewer.
+
+    Instead of py3Dmol embedding the whole ~800KB 3Dmol.js library inside every
+    render (which exhausts memory on the small Streamlit Cloud tier), we load the
+    library ONCE from a CDN and emit only a few KB of our own JS. Same visuals,
+    a fraction of the weight — so the cloud stays responsive across many dockings.
     """
     o = dict(DEFAULTS)
     if options:
         o.update(options)
 
     with open(complex_pdb_path) as f:
-        pdb = f.read()
+        pdb = _crop_to_pocket(f.read())   # only the pocket → tiny payload, cloud-safe
 
-    view = py3Dmol.view(width=width, height=height)
-    view.addModel(pdb, "pdb")
-
-    protein = {"resn": "LIG", "invert": True}   # everything that is NOT the ligand
-    ligand  = {"resn": "LIG"}
+    pstyle = o["protein_style"]
+    pcolor = _protein_color_spec(o["protein_color"])    # {"color":...} or {"colorscheme":...}
+    js = []
 
     # ── protein representation ──
-    pstyle = o["protein_style"]
-    pcolor = _protein_color_spec(o["protein_color"])
     if pstyle in ("cartoon", "cartoon+surface"):
         cartoon = dict(pcolor)
         cartoon.update({"thickness": 0.45, "arrows": True,
-                        "opacity": o.get("protein_opacity", 1.0)})   # smoother, Maestro-like ribbons
+                        "opacity": o.get("protein_opacity", 1.0)})
         if o.get("cartoon_style", "default") != "default":
             cartoon["style"] = o["cartoon_style"]
-        view.setStyle(protein, {"cartoon": cartoon})
+        js.append(f'v.setStyle({{}}, {{cartoon:{_json.dumps(cartoon)}}});')
     elif pstyle == "stick":
-        view.setStyle(protein, {"stick": {"radius": 0.12, **({} if "colorscheme" in pcolor else pcolor)}})
+        js.append('v.setStyle({}, {stick:{radius:0.12}});')
     elif pstyle == "line":
-        view.setStyle(protein, {"line": {}})
-    elif pstyle == "surface":
-        view.setStyle(protein, {})   # no cartoon; surface added below
+        js.append('v.setStyle({}, {line:{}});')
+    else:  # surface only
+        js.append('v.setStyle({}, {});')
     if pstyle in ("surface", "cartoon+surface"):
-        view.addSurface(py3Dmol.VDW,
-                        {"opacity": o["surface_opacity"], "color": o["surface_color"]},
-                        protein)
+        js.append(f'v.addSurface($3Dmol.SurfaceType.VDW, '
+                  f'{{opacity:{o["surface_opacity"]}, color:"{o["surface_color"]}"}}, '
+                  f'{{resn:"LIG", invert:true}});')
 
     # ── ligand representation ──
-    cs = o["ligand_carbon"]
-    lstyle = o["ligand_style"]
-    lr = o.get("ligand_radius", 0.22)
+    cs = o["ligand_carbon"]; lr = o.get("ligand_radius", 0.22); lstyle = o["ligand_style"]
     if lstyle == "stick":
-        view.addStyle(ligand, {"stick": {"colorscheme": cs, "radius": lr}})
+        js.append(f'v.setStyle({{resn:"LIG"}}, {{stick:{{colorscheme:"{cs}", radius:{lr}}}}});')
     elif lstyle == "ball-and-stick":
-        view.addStyle(ligand, {"stick": {"colorscheme": cs, "radius": lr * 0.6}})
-        view.addStyle(ligand, {"sphere": {"colorscheme": cs, "scale": 0.32}})
+        js.append(f'v.setStyle({{resn:"LIG"}}, {{stick:{{colorscheme:"{cs}", radius:{lr*0.6}}}, '
+                  f'sphere:{{colorscheme:"{cs}", scale:0.32}}}});')
     elif lstyle == "sphere":
-        view.addStyle(ligand, {"sphere": {"colorscheme": cs}})
+        js.append(f'v.setStyle({{resn:"LIG"}}, {{sphere:{{colorscheme:"{cs}"}}}});')
     elif lstyle == "line":
-        view.addStyle(ligand, {"line": {}})
+        js.append('v.setStyle({resn:"LIG"}, {line:{}});')
 
-    # ── interacting residues (cyan sticks) ──
+    # ── interacting residues ──
     if o["show_residues"]:
-        resi_list = [str(r) for r in ia.get("residue_numbers", [])]
-        if resi_list:
-            view.addStyle({"resi": resi_list},
-                          {"stick": {"colorscheme": "cyanCarbon", "radius": 0.15}})
+        resi = [str(r) for r in ia.get("residue_numbers", [])]
+        if resi:
+            js.append(f'v.addStyle({{resi:{_json.dumps(resi)}}}, '
+                      f'{{stick:{{colorscheme:"cyanCarbon", radius:0.15}}}});')
 
-    # ── interaction lines + residue labels ──
+    # ── interaction lines + labels ──
     if o["show_interactions"]:
         seen = set()
         for ln in ia.get("lines", []):
             p1, p2 = ln["p1"], ln["p2"]
-            view.addCylinder({
-                "start": {"x": p1[0], "y": p1[1], "z": p1[2]},
-                "end":   {"x": p2[0], "y": p2[1], "z": p2[2]},
-                "radius": 0.08, "dashed": True, "fromCap": 1, "toCap": 1,
-                "color": ln["color"],
-            })
+            js.append(f'v.addCylinder({{start:{{x:{p1[0]},y:{p1[1]},z:{p1[2]}}}, '
+                      f'end:{{x:{p2[0]},y:{p2[1]},z:{p2[2]}}}, radius:0.08, dashed:true, '
+                      f'fromCap:1, toCap:1, color:"{ln["color"]}"}});')
             if o["show_labels"] and ln["label"] not in seen:
                 seen.add(ln["label"])
-                view.addLabel(ln["label"], {
-                    "position": {"x": p2[0], "y": p2[1], "z": p2[2]},
-                    "fontSize": o.get("label_size", 11), "fontColor": "white",
-                    "backgroundColor": "0x111827", "backgroundOpacity": 0.7,
-                })
+                js.append(f'v.addLabel({_json.dumps(ln["label"])}, '
+                          f'{{position:{{x:{p2[0]},y:{p2[1]},z:{p2[2]}}}, '
+                          f'fontSize:{o.get("label_size", 11)}, fontColor:"white", '
+                          f'backgroundColor:"#111827", backgroundOpacity:0.7}});')
 
-    view.setBackgroundColor(_hex(o["background"]))
-    view.zoomTo({"resn": "LIG"})
-    view.zoom(o.get("zoom", 0.6))
+    js.append('v.zoomTo({resn:"LIG"});')
+    js.append(f'v.zoom({o.get("zoom", 0.6)});')
     if o["spin"]:
-        view.spin(True)
-    return view._make_html()
+        js.append('v.spin(true);')
+    js.append('v.render();')
+
+    return f"""<div id="mumoview" style="width:100%;height:{height}px;position:relative;"></div>
+<script src="https://3dmol.org/build/3Dmol-min.js"></script>
+<script>
+(function(){{
+  function go(){{
+    if(!window.$3Dmol){{ setTimeout(go, 60); return; }}
+    var v = $3Dmol.createViewer(document.getElementById("mumoview"),
+                                {{backgroundColor:"{o['background']}"}});
+    v.addModel({_json.dumps(pdb)}, "pdb");
+    {chr(10) + "    ".join(js)}
+  }}
+  go();
+}})();
+</script>"""
