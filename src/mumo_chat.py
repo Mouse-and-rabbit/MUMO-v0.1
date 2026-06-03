@@ -24,7 +24,7 @@ from brain import parse_intent, write_report
 from agents.target_finder import find_targets
 from agents.ligand_scout import find_ligands
 from agents.target_analyst import auto_grid_from_pdb
-from agents.admet import resolve_ligand, druglikeness, parse_ligand_file
+from agents.admet import resolve_ligand, druglikeness
 from pipeline import dock_pipeline
 from viz import render_complex_html
 from setup_env import ensure_vina
@@ -34,30 +34,7 @@ DATA = os.path.join(BASE, "data"); os.makedirs(DATA, exist_ok=True)
 VENV = os.path.join(BASE, ".venv", "Scripts" if os.name == "nt" else "bin")
 VINA = ensure_vina()
 
-st.set_page_config(page_title="MUMO · Drug Discovery", page_icon="🧬", layout="centered")
-
-# ── refined, theme-aware styling (accent only on brand/buttons; text follows theme) ──
-st.markdown("""
-<style>
-.block-container { max-width: 880px; padding-top: 2.2rem; }
-.mumo-brand {
-    font-size: 3rem; font-weight: 800; letter-spacing: -1.5px; line-height: 1;
-    background: linear-gradient(90deg, #6366f1, #06b6d4);
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-}
-.mumo-tag { opacity: 0.6; font-size: 1.02rem; margin-top: 0.5rem; line-height: 1.6; }
-.stButton > button {
-    border-radius: 11px; font-weight: 600; border: 1px solid rgba(128,128,128,0.25);
-    transition: all .15s ease;
-}
-.stButton > button:hover {
-    border-color: #6366f1; transform: translateY(-1px);
-}
-[data-testid="stChatMessage"] { border-radius: 16px; padding: 0.3rem 0.5rem; }
-[data-testid="stChatInput"] textarea { border-radius: 12px; }
-hr { margin: 1rem 0; opacity: 0.25; }
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(page_title="MUMO", page_icon="🧬", layout="centered")
 
 # ── session ──
 ss = st.session_state
@@ -68,8 +45,6 @@ ss.setdefault("results", None)    # {rdf, viz, meta}
 ss.setdefault("run_now", False)
 ss.setdefault("history", [])      # [{title, messages, results}]
 ss.setdefault("panel_open", False)  # is the right results drawer open?
-ss.setdefault("uploaded_ligands", None)   # batch of ligands from an uploaded file
-ss.setdefault("_ligfile_sig", None)
 _llm = get_llm()
 
 
@@ -102,8 +77,6 @@ CONV_SYSTEM = (
     "• Fix obvious gene typos (CTRF→CFTR, EGRF→EGFR) and recognise drug names.\n"
     "• Ask for what's missing one item at a time, briefly and naturally.\n"
     "• Set ready_to_dock=true ONLY when you have (a target OR a disease) AND a tier.\n"
-    "• If known.uploaded_ligands > 0, the user already provided a batch of ligands — do NOT "
-    "ask for a ligand or scouting; just collect the target and tier, then set ready_to_dock.\n"
     "• Set analyze_only=true if the user only wants a molecule's drug-likeness, no docking.\n\n"
     "Reply with ONLY a JSON object and nothing else:\n"
     '{"disease": <string|null>, "target": <gene or 4-char PDB ID|null>, '
@@ -141,7 +114,6 @@ def converse(msg):
 
     # ── LLM-driven turn ──
     known = {k: c.get(k) for k in ("disease", "target", "ligand", "tier")}
-    known["uploaded_ligands"] = len(ss.get("uploaded_ligands") or [])
     prompt = (f"Known so far: {_json.dumps(known)}\n\n"
               f"Conversation:\n{_history_text()}\n\n"
               f'The user just said: "{msg}"\n\nReturn the JSON.')
@@ -216,10 +188,7 @@ def run_pipeline(status_area):
         return
 
     tgt = build_target(c)
-    if ss.get("uploaded_ligands"):                       # a whole batch was uploaded
-        ligands = ss["uploaded_ligands"]
-        status_area.write(f"📎 Docking {len(ligands)} uploaded ligand(s) against {tgt['gene']}…")
-    elif c.get("ligand_smiles"):
+    if c.get("ligand_smiles"):
         ligands = [{"label": c["ligand_label"], "smiles": c["ligand_smiles"]}]
     else:
         n = c.get("n_ligands") or 3
@@ -261,8 +230,7 @@ def run_pipeline(status_area):
             f"kcal/mol** against {meta['gene']}. Full results & 3D pose are below.\n\n{rep}")
     else:
         say("The docking didn't produce a valid pose — see the results below.")
-    ss.convo = {}                 # reset for the next, independent request
-    ss.uploaded_ligands = None    # consume the uploaded batch
+    ss.convo = {}   # reset for the next, independent request
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -277,27 +245,7 @@ with st.sidebar:
             title = next((m["content"] for m in ss.messages if m["role"] == "user"), "Chat")
             ss.history.insert(0, {"title": title[:40], "messages": ss.messages, "results": ss.results})
         ss.messages, ss.stage, ss.convo, ss.results, ss.run_now = [], "start", {}, None, False
-        ss.uploaded_ligands, ss._ligfile_sig = None, None
         st.rerun()
-
-    st.markdown("---")
-    st.markdown("**📎 Batch ligands**")
-    up = st.file_uploader("Upload many ligands to dock", type=["smi", "txt", "csv", "sdf"],
-                          label_visibility="collapsed", key="ligfile")
-    if up is not None:
-        sig = (up.name, up.size)
-        if ss._ligfile_sig != sig:
-            ss._ligfile_sig = sig
-            try:
-                ss.uploaded_ligands = parse_ligand_file(up.name, up.read())
-                say(f"📎 Loaded **{len(ss.uploaded_ligands)} ligands** from `{up.name}`. "
-                    f"Tell me a target and report style — e.g. *“dock them against 6LU7, "
-                    f"standard”* — and I'll dock the whole batch.")
-            except Exception as e:
-                say(f"I couldn't read that ligand file: {e}")
-    if ss.uploaded_ligands:
-        st.caption(f"✅ {len(ss.uploaded_ligands)} ligand(s) ready to dock")
-
     st.markdown("---")
     st.caption("History")
     for i, h in enumerate(ss.history[:15]):
@@ -332,21 +280,9 @@ def render_results():
         st.table(pd.DataFrame(list(r["druglikeness"].items()), columns=["Property", "Value"]))
     else:
         rdf = r["rdf"]
-        st.markdown(f"### 📊 Docking results — {r['meta']['gene']}")
-        top = rdf.iloc[0]
-        best = top["Best affinity (kcal/mol)"]
-        try:
-            bf = float(best)
-            verdict = ("🟢 Very strong" if bf <= -8 else "🟡 Good" if bf <= -6
-                       else "🟠 Moderate" if bf <= -4 else "🔴 Weak")
-        except (ValueError, TypeError):
-            verdict = "—"
-        m = st.columns(3)
-        m[0].metric("Best affinity", f"{best} kcal/mol")
-        m[1].metric("Top ligand", str(top["Ligand"]))
-        m[2].metric("Binding", verdict)
-        st.dataframe(rdf, use_container_width=True, height=220)
-        st.download_button("⬇ Download results (CSV)", rdf.to_csv(index_label="Rank").encode("utf-8"),
+        st.markdown(f"#### 📊 Docking results — {r['meta']['gene']}")
+        st.dataframe(rdf, use_container_width=True, height=200)
+        st.download_button("⬇ CSV", rdf.to_csv(index_label="Rank").encode("utf-8"),
                            file_name=f"MUMO_{r['meta']['gene']}.csv", mime="text/csv")
         if r.get("viz"):
             st.markdown("##### 🧪 3D pose & interactions")
@@ -405,26 +341,10 @@ def render_results():
 
 def render_chat():
     if not ss.messages:
-        st.markdown(
-            "<div style='text-align:center; margin-top:9vh;'>"
-            "<div style='font-size:3.2rem;'>🧬</div>"
-            "<div class='mumo-brand'>MUMO</div>"
-            "<div class='mumo-tag'>Your conversational drug-discovery lab.<br>"
-            "Find a target, dock a molecule, read the interactions — just by chatting.</div>"
-            "</div>", unsafe_allow_html=True)
-        st.markdown("<div style='height:1.6rem;'></div>", unsafe_allow_html=True)
-        examples = [
-            ("💊  Drug for a disease", "find a drug for cystic fibrosis, standard report"),
-            ("🎯  Dock a known drug", "dock aspirin against 6LU7, standard report"),
-            ("🔬  Analyze a molecule", "analyze ibuprofen"),
-        ]
-        cols = st.columns(3)
-        for col, (label, prompt) in zip(cols, examples):
-            if col.button(label, use_container_width=True, key="ex_" + label):
-                converse(prompt)
-                st.rerun()
-        st.caption("Or just type below — even messy English works. Batch-dock many ligands "
-                   "via the 📎 uploader in the sidebar.")
+        st.markdown("<div style='text-align:center;margin-top:18vh;'>"
+                    "<h1>🧬 MUMO</h1>"
+                    "<p style='opacity:0.6;'>Tell me what to work on — a disease, a target, or a molecule.<br>"
+                    "I'll ask what I need, then dock it.</p></div>", unsafe_allow_html=True)
     for m in ss.messages:
         with st.chat_message(m["role"], avatar="🧬" if m["role"] == "assistant" else "🧑"):
             st.markdown(m["content"])

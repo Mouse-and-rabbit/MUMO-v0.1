@@ -16,50 +16,10 @@ This is the first piece of the ADMET Analyst. It also resolves a drug NAME
 All free — RDKit (local) + PubChem (public). No API key.
 """
 
-import io
 from urllib.parse import quote
 import requests
 from rdkit import Chem
 from rdkit.Chem import Descriptors, Lipinski, Crippen, QED
-
-
-def parse_ligand_file(filename, data_bytes):
-    """
-    Read a ligand file and return [{label, smiles}, ...] for valid molecules.
-    Supports:  .smi/.txt (SMILES [name] per line), .csv (a SMILES column), .sdf.
-    """
-    name = filename.lower()
-    ligs = []
-
-    if name.endswith(".sdf"):
-        supplier = Chem.ForwardSDMolSupplier(io.BytesIO(data_bytes))
-        for i, m in enumerate(supplier):
-            if m is not None:
-                lbl = m.GetProp("_Name") if m.HasProp("_Name") and m.GetProp("_Name") else f"mol_{i+1}"
-                ligs.append({"label": lbl, "smiles": Chem.MolToSmiles(m)})
-
-    elif name.endswith(".csv"):
-        import pandas as pd
-        df = pd.read_csv(io.BytesIO(data_bytes))
-        scol = next((c for c in df.columns
-                     if c.lower() in ("smiles", "smile", "canonical_smiles", "structure")),
-                    df.columns[0])
-        ncol = next((c for c in df.columns if c.lower() in ("name", "id", "label", "title", "compound")), None)
-        for i, row in df.iterrows():
-            ligs.append({"label": str(row[ncol]) if ncol else f"lig_{i+1}",
-                         "smiles": str(row[scol]).strip()})
-
-    else:  # .smi / .txt
-        text = data_bytes.decode("utf-8", "ignore")
-        for i, line in enumerate(text.splitlines()):
-            line = line.strip()
-            if not line or line.lower().startswith("smiles"):
-                continue
-            parts = line.replace(",", " ").split()
-            ligs.append({"label": parts[1] if len(parts) > 1 else f"lig_{i+1}",
-                         "smiles": parts[0]})
-
-    return [l for l in ligs if is_valid_smiles(l["smiles"])]
 
 
 def is_valid_smiles(s):
