@@ -62,13 +62,13 @@ st.markdown("""
     border-color: rgba(45,212,191,0.5); color: #fff;
     background: rgba(45,212,191,0.06);
 }
-.mumo-brand {
-    display:flex; align-items:center; gap:.5rem;
+.mumo-brand { display:flex; align-items:center; gap:.55rem; margin:.2rem 0 1rem .1rem; }
+.mumo-brand .wm {
     font-size:1.5rem; font-weight:800; letter-spacing:.5px;
-    margin:.2rem 0 1rem .1rem;
     background: linear-gradient(90deg,#818cf8,#22d3ee,#34d399);
     -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
 }
+.mumo-hero-logo { display:flex; align-items:center; justify-content:center; gap:16px; margin-bottom:.2rem; }
 
 /* Chat bubbles + input */
 [data-testid="stChatMessage"] {
@@ -127,6 +127,29 @@ def theme_bg():
 
 def say(text):
     ss.messages.append({"role": "assistant", "content": text})
+
+
+def mol_logo(size=28, gid="mg"):
+    """Inline SVG of a clean hexagonal molecule — MUMO's professional brand mark."""
+    return (
+        f'<svg width="{size}" height="{size}" viewBox="0 0 64 64" '
+        'xmlns="http://www.w3.org/2000/svg" style="vertical-align:middle;">'
+        f'<defs><linearGradient id="{gid}" x1="0" y1="0" x2="64" y2="64" '
+        'gradientUnits="userSpaceOnUse">'
+        '<stop offset="0" stop-color="#818cf8"/><stop offset="0.5" stop-color="#22d3ee"/>'
+        '<stop offset="1" stop-color="#34d399"/></linearGradient></defs>'
+        f'<g stroke="url(#{gid})" stroke-width="2.6" stroke-linecap="round" '
+        'stroke-linejoin="round" fill="none">'
+        '<polygon points="32,12 48,21 48,39 32,48 16,39 16,21"/>'
+        '<line x1="48" y1="21" x2="58" y2="15"/><line x1="16" y1="39" x2="6" y2="45"/>'
+        '<line x1="32" y1="48" x2="32" y2="59"/></g>'
+        f'<g fill="url(#{gid})">'
+        '<circle cx="32" cy="12" r="3.4"/><circle cx="48" cy="21" r="3.4"/>'
+        '<circle cx="48" cy="39" r="3.4"/><circle cx="32" cy="48" r="3.4"/>'
+        '<circle cx="16" cy="39" r="3.4"/><circle cx="16" cy="21" r="3.4"/>'
+        '<circle cx="58" cy="15" r="3"/><circle cx="6" cy="45" r="3"/>'
+        '<circle cx="32" cy="59" r="3"/></g></svg>'
+    )
 
 
 # ── LLM-driven conversation — the brain reads every reply IN CONTEXT ──
@@ -360,7 +383,8 @@ def run_pipeline(status_area):
 
 # ── left sidebar: history ──
 with st.sidebar:
-    st.markdown("<div class='mumo-brand'>🧬 MUMO</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='mumo-brand'>{mol_logo(26, 'mgSide')}<span class='wm'>MUMO</span></div>",
+                unsafe_allow_html=True)
     if st.button("➕  New chat", use_container_width=True):
         if ss.messages:
             title = next((m["content"] for m in ss.messages if m["role"] == "user"), "Chat")
@@ -396,41 +420,46 @@ if ss.run_now:
 def render_results():
     r = ss.results
     if "druglikeness" in r:
-        st.markdown(f"#### 💊 Drug-likeness — {r['lig_label']}")
+        st.markdown(f"#### Drug-likeness — {r['lig_label']}")
         st.caption(f"`{r['lig_smiles']}`")
         st.table(pd.DataFrame(list(r["druglikeness"].items()), columns=["Property", "Value"]))
     else:
         rdf = r["rdf"]
-        st.markdown(f"#### 📊 Docking results — {r['meta']['gene']}")
+        st.markdown(f"#### Docking results — {r['meta']['gene']}")
         st.dataframe(rdf, use_container_width=True, height=200)
-        st.download_button("⬇ CSV", rdf.to_csv(index_label="Rank").encode("utf-8"),
+        st.download_button("Download CSV", rdf.to_csv(index_label="Rank").encode("utf-8"),
                            file_name=f"MUMO_{r['meta']['gene']}.csv", mime="text/csv")
         if r.get("viz"):
-            st.markdown("##### 🔬 Pose & Interaction Views")
+            st.markdown("##### Pose & Interaction Views")
             choice = st.selectbox("Ligand", list(r["viz"].keys()), label_visibility="collapsed")
             entry = r["viz"][choice]
 
-            tab_2d, tab_3d = st.tabs(["📊 2D Diagram", "🧪 3D Pose"])
+            tab_3d, tab_2d = st.tabs(["3D Pose", "2D Interactions"])
 
             with tab_2d:
                 svg_content = entry["ia"].get("svg_2d", "")
                 if svg_content:
                     st.markdown(
-                        f'<div style="background-color: white; padding: 20px; border-radius: 12px; border: 1px solid rgba(0,212,170,0.2); box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: flex; justify-content: center; align-items: center; max-width: 600px; margin: 1.5rem auto 0.5rem auto;">{svg_content}</div>',
+                        f'<div style="background-color: white; padding: 16px; border-radius: 12px; border: 1px solid rgba(0,212,170,0.2); box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: flex; justify-content: center; align-items: center; max-width: 760px; margin: 1.5rem auto 0.5rem auto;">{svg_content}</div>',
                         unsafe_allow_html=True
                     )
-                    st.caption(
-                        "<div style='text-align: center; color: rgba(226,232,240,0.65); font-size: 0.8rem; margin-top: 0.5rem;'>"
-                        "🔵 H-bond &nbsp;·&nbsp; 🟤 Hydrophobic &nbsp;·&nbsp; 🟠 Salt bridge &nbsp;·&nbsp; 🟢 Pi-stack &nbsp;·&nbsp; 🟣 Pi-cation &nbsp;·&nbsp; 🟡 Halogen<br>"
-                        "<i>Note: Residue labels indicate the specific receptor residues interacting with highlighted ligand atoms.</i>"
-                        "</div>",
+                    def _sw(color, label):
+                        return (f"<span style='display:inline-block;width:11px;height:11px;"
+                                f"border-radius:50%;background:{color};margin:0 5px -1px 12px;'></span>{label}")
+                    st.markdown(
+                        "<div style='text-align:center; color:rgba(226,232,240,0.7); font-size:0.82rem; margin-top:0.3rem;'>"
+                        + _sw("#2563eb", "H-bond") + _sw("#6b7280", "Hydrophobic")
+                        + _sw("#ea580c", "Salt bridge") + _sw("#16a34a", "Pi-stack")
+                        + _sw("#9333ea", "Pi-cation") + _sw("#0d9488", "Halogen")
+                        + "<br><span style='opacity:0.7;'>Each residue bubble is linked by a dashed line "
+                          "to the ligand atom it interacts with.</span></div>",
                         unsafe_allow_html=True
                     )
                 else:
                     st.info("No 2D interaction diagram available.")
 
             with tab_3d:
-                with st.expander("⚙️ Visualization settings", expanded=False):
+                with st.expander("Visualization settings", expanded=False):
                     a = st.columns(3)
                     protein_style = a[0].selectbox("Protein style", ["cartoon", "cartoon+surface",
                                                    "surface", "stick", "line"], key="vp_style")
@@ -484,14 +513,15 @@ def render_chat():
     if not ss.messages:
         st.markdown(
             "<div class='mumo-hero'>"
-            "<div class='mumo-hero-title'>🧬 MUMO</div>"
+            f"<div class='mumo-hero-logo'>{mol_logo(58, 'mgHero')}"
+            "<span class='mumo-hero-title'>MUMO</span></div>"
             "<p class='mumo-hero-sub'>Tell me what to work on — a disease, a target, "
             "or a molecule. I'll ask what I need, then dock it.</p>"
             "<div class='mumo-pills'><span>Disease, Target, or Molecule</span>"
             "<span>Analysis &amp; Design</span><span>Docking Results</span></div>"
             "</div>", unsafe_allow_html=True)
     for m in ss.messages:
-        with st.chat_message(m["role"], avatar="🧬" if m["role"] == "assistant" else "🧑"):
+        with st.chat_message(m["role"]):
             st.markdown(m["content"])
 
 

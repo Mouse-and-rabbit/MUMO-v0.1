@@ -217,109 +217,140 @@ def _run_plip(receptor_pdb, ligand_pdbqt, out_complex_pdb):
 
 def generate_2d_interaction_svg(complex_pdb_path, site):
     """
-    Generates a 2D interaction diagram of the ligand showing color-coded
-    highlighted atoms and residue labels for interactions from PLIP.
+    Build a professional 2D ligand-interaction diagram (Maestro / LigPlot style):
+    the ligand is drawn in the centre, and every interacting residue is shown as a
+    labelled bubble around it, connected by a colour-coded dashed line to the ligand
+    atom it touches. Colour encodes the interaction type. Pure RDKit — no extra deps.
     """
     try:
+        import math
         from rdkit import Chem
         from rdkit.Chem import rdDepictor
         from rdkit.Chem.Draw import rdMolDraw2D
 
-        # Read ligand lines from complex_pdb_path (chain Z, residue name LIG)
-        lig_lines = []
-        with open(complex_pdb_path) as f:
-            for line in f:
-                if "LIG" in line and (line.startswith("HETATM") or line.startswith("ATOM")):
-                    lig_lines.append(line)
+        COLORS_RGB = {
+            "H-bond": (0.15, 0.39, 0.92), "Hydrophobic": (0.42, 0.45, 0.50),
+            "Halogen": (0.05, 0.58, 0.53), "Salt bridge": (0.92, 0.35, 0.05),
+            "Pi-stack": (0.09, 0.64, 0.29), "Pi-cation": (0.58, 0.20, 0.83),
+        }
+        COLORS_HEX = {
+            "H-bond": "#2563eb", "Hydrophobic": "#6b7280", "Halogen": "#0d9488",
+            "Salt bridge": "#ea580c", "Pi-stack": "#16a34a", "Pi-cation": "#9333ea",
+        }
+
+        # ── read the ligand (chain Z / resname LIG) out of the complex ──
+        lig_lines = [ln for ln in open(complex_pdb_path)
+                     if "LIG" in ln and ln.startswith(("HETATM", "ATOM"))]
         if not lig_lines:
             return ""
-        
-        pdb_block = "".join(lig_lines)
-        mol = Chem.MolFromPDBBlock(pdb_block, sanitize=False)
-        if mol is None:
+        mol = Chem.MolFromPDBBlock("".join(lig_lines), sanitize=False)
+        if mol is None or mol.GetNumConformers() == 0:
             return ""
 
-        # Map PDB serial numbers to RDKit indices
-        pdb_to_rdkit = {}
-        for atom in mol.GetAtoms():
-            info = atom.GetPDBResidueInfo()
-            if info:
-                pdb_to_rdkit[info.GetSerialNumber()] = atom.GetIdx()
+        # PLIP reports ligand atoms by their GLOBAL index in the full complex, which
+        # does NOT match RDKit's local ligand indices. So we match each interaction's
+        # ligand atom to the nearest RDKit atom by its 3D coordinate (read BEFORE we
+        # overwrite the conformer with 2D coords).
+        conf = mol.GetConformer()
+        rd_pos = [conf.GetAtomPosition(i) for i in range(mol.GetNumAtoms())]
 
-        atom_notes = {}
-        atom_colors = {}
-        highlight_atoms = []
+        def _xyz(obj):
+            if obj is None:
+                return None
+            if hasattr(obj, "coords"):
+                return tuple(obj.coords)
+            if hasattr(obj, "center"):
+                return tuple(obj.center)
+            return None
 
-        def add_interaction(serial, label, color_rgb):
-            idx = pdb_to_rdkit.get(serial)
-            if idx is not None:
-                if idx not in atom_notes:
-                    atom_notes[idx] = []
-                atom_notes[idx].append(label)
-                atom_colors[idx] = color_rgb
-                if idx not in highlight_atoms:
-                    highlight_atoms.append(idx)
+        def _nearest(xyz):
+            if xyz is None:
+                return None
+            bi, best = None, 1e18
+            for i, p in enumerate(rd_pos):
+                d = (p.x - xyz[0]) ** 2 + (p.y - xyz[1]) ** 2 + (p.z - xyz[2]) ** 2
+                if d < best:
+                    best, bi = d, i
+            return bi
 
-        # 1. Hydrogen bonds (Donor-Acceptor)
+        # ── collect interactions: (atom_idx, restype, resnr, reschain, itype) ──
+        interactions, highlight_atoms, atom_colors = [], [], {}
+
+        def add(ligobj, restype, resnr, reschain, itype):
+            idx = _nearest(_xyz(ligobj))
+            if idx is None:
+                return
+            atom_colors[idx] = COLORS_RGB[itype]
+            if idx not in highlight_atoms:
+                highlight_atoms.append(idx)
+            interactions.append((idx, restype, int(resnr), reschain, itype))
+
         for b in list(site.hbonds_ldon) + list(site.hbonds_pdon):
-            serial = b.a_orig_idx if b.protisdon else b.d_orig_idx
-            res_label = f"{b.restype}{b.resnr}({b.reschain}) [H-bond]"
-            add_interaction(serial, res_label, (0.18, 0.49, 0.86))  # Premium blue
-
-        # 2. Hydrophobic contacts
+            add(b.a if b.protisdon else b.d, b.restype, b.resnr, b.reschain, "H-bond")
         for c in site.hydrophobic_contacts:
-            serial = c.ligatom_orig_idx
-            res_label = f"{c.restype}{c.resnr}({c.reschain}) [Hydroph]"
-            add_interaction(serial, res_label, (0.55, 0.55, 0.55))  # Dark grey
-
-        # 3. Halogen bonds
+            add(c.ligatom, c.restype, c.resnr, c.reschain, "Hydrophobic")
         for x in site.halogen_bonds:
-            serial = x.don_orig_idx if x.don_orig_idx in pdb_to_rdkit else x.acc_orig_idx
-            res_label = f"{x.restype}{x.resnr}({x.reschain}) [Halogen]"
-            add_interaction(serial, res_label, (0.0, 0.72, 0.72))  # Teal/Cyan
-
-        # 4. Salt bridges
+            add(getattr(x, "don", None), x.restype, x.resnr, x.reschain, "Halogen")
         for s in list(site.saltbridge_lneg) + list(site.saltbridge_pneg):
-            res_label = f"{s.restype}{s.resnr}({s.reschain}) [Salt Bridge]"
-            group = s.negative if s.protispos else s.positive
-            if hasattr(group, "atoms_orig_idx"):
-                for serial in group.atoms_orig_idx:
-                    add_interaction(serial, res_label, (1.0, 0.5, 0.0))  # Orange
-
-        # 5. Pi-stacking
+            add(s.negative if s.protispos else s.positive,
+                s.restype, s.resnr, s.reschain, "Salt bridge")
         for p in site.pistacking:
-            res_label = f"{p.restype}{p.resnr}({p.reschain}) [Pi-stack]"
-            if hasattr(p.ligandring, "atoms_orig_idx"):
-                for serial in p.ligandring.atoms_orig_idx:
-                    add_interaction(serial, res_label, (0.0, 0.72, 0.2))  # Green
+            add(p.ligandring, p.restype, p.resnr, p.reschain, "Pi-stack")
+        for p in site.pication_laro:
+            add(getattr(p, "ring", None), p.restype, p.resnr, p.reschain, "Pi-cation")
+        for p in site.pication_paro:
+            add(getattr(p, "charge", None), p.restype, p.resnr, p.reschain, "Pi-cation")
 
-        # 6. Pi-cation
-        for p in list(site.pication_laro) + list(site.pication_paro):
-            res_label = f"{p.restype}{p.resnr}({p.reschain}) [Pi-cation]"
-            if hasattr(p, "ring") and hasattr(p.ring, "atoms_orig_idx") and any(a in pdb_to_rdkit for a in p.ring.atoms_orig_idx):
-                for serial in p.ring.atoms_orig_idx:
-                    add_interaction(serial, res_label, (0.8, 0.2, 0.8))  # Purple
-            elif hasattr(p, "charge") and hasattr(p.charge, "atoms_orig_idx"):
-                for serial in p.charge.atoms_orig_idx:
-                    add_interaction(serial, res_label, (0.8, 0.2, 0.8))  # Purple
-
-        # Apply notes (labels) to RDKit mol
-        for idx, notes in atom_notes.items():
-            note_text = ", ".join(notes)
-            mol.GetAtomWithIdx(idx).SetProp("atomNote", note_text)
-
-        # Generate 2D depiction coordinates
+        # ── draw the ligand, leaving a wide margin for the residue bubbles ──
         rdDepictor.Compute2DCoords(mol)
-
-        # Render molecule to SVG format on a white card
-        drawer = rdMolDraw2D.MolDraw2DSVG(550, 480)
+        W, H = 760, 640
+        drawer = rdMolDraw2D.MolDraw2DSVG(W, H)
         opts = drawer.drawOptions()
-        opts.setBackgroundColour((1.0, 1.0, 1.0, 1.0))
-        opts.annotationFontScale = 0.82
-        
-        drawer.DrawMolecule(mol, highlightAtoms=highlight_atoms, highlightAtomColors=atom_colors)
+        opts.setBackgroundColour((1, 1, 1, 1))
+        opts.padding = 0.33                      # shrink molecule → room for bubbles
+        drawer.DrawMolecule(mol, highlightAtoms=highlight_atoms,
+                            highlightAtomColors=atom_colors)
         drawer.FinishDrawing()
-        return drawer.GetDrawingText()
+        svg = drawer.GetDrawingText()
+
+        if not interactions:
+            return svg
+
+        coords = [drawer.GetDrawCoords(i) for i in range(mol.GetNumAtoms())]
+
+        # one bubble per residue (keep its first interaction)
+        seen, order = {}, []
+        for idx, restype, resnr, reschain, itype in interactions:
+            key = (restype, resnr, reschain)
+            if key not in seen:
+                seen[key] = (idx, itype)
+                order.append(key)
+
+        cx, cy, R = W / 2.0, H / 2.0, min(W, H) * 0.40
+        # order residues by their atom's angle, then space evenly (avoids overlap)
+        order.sort(key=lambda k: math.atan2(coords[seen[k][0]].y - cy,
+                                            coords[seen[k][0]].x - cx))
+        extra, n = [], max(len(order), 1)
+        for i, key in enumerate(order):
+            restype, resnr, reschain = key
+            idx, itype = seen[key]
+            hexc, ap = COLORS_HEX[itype], coords[idx]
+            theta = 2 * math.pi * i / n - math.pi / 2
+            nx, ny = cx + R * math.cos(theta), cy + R * math.sin(theta)
+            extra.append(
+                f'<line x1="{ap.x:.1f}" y1="{ap.y:.1f}" x2="{nx:.1f}" y2="{ny:.1f}" '
+                f'stroke="{hexc}" stroke-width="1.7" stroke-dasharray="5,4" opacity="0.85"/>')
+            extra.append(
+                f'<ellipse cx="{nx:.1f}" cy="{ny:.1f}" rx="41" ry="22" '
+                f'fill="#ffffff" stroke="{hexc}" stroke-width="2.2"/>')
+            extra.append(
+                f'<text x="{nx:.1f}" y="{ny - 3:.1f}" text-anchor="middle" '
+                f'font-family="sans-serif" font-size="13" font-weight="700" '
+                f'fill="#1f2937">{restype} {resnr}</text>')
+            extra.append(
+                f'<text x="{nx:.1f}" y="{ny + 12:.1f}" text-anchor="middle" '
+                f'font-family="sans-serif" font-size="9" fill="{hexc}">{itype} &#183; {reschain}</text>')
+        return svg.replace("</svg>", "\n".join(extra) + "\n</svg>")
     except Exception as e:
         print(f"Error generating 2D SVG: {e}")
         return ""
