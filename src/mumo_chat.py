@@ -131,28 +131,46 @@ def say(text):
 
 # ── LLM-driven conversation — the brain reads every reply IN CONTEXT ──
 CONV_SYSTEM = (
-    "You are MUMO, a warm, intelligent drug-discovery assistant. Your job is to dock a "
-    "ligand into a protein target and report the result. To run a docking you need:\n"
-    "• TARGET: a gene/protein name (CFTR, EGFR…) or a 4-character PDB ID (6LU7, 1NFK…), "
-    "OR a DISEASE (you derive the target from it).\n"
-    "• LIGAND (optional): a drug name (aspirin, lupeol…) or a SMILES string. If the user "
-    "has none, you scout candidates automatically.\n"
-    "• TIER: report style — Simple, Standard, or Ambitious.\n\n"
-    "Act like a smart human assistant:\n"
-    "• Read each message IN CONTEXT of the conversation and what is already known.\n"
-    "• If a message is off-topic, vague or random (e.g. 'hi', 'ok', 'm', 'thanks', 'lol'), "
-    "reply warmly and gently RE-ASK for the next thing you need. NEVER invent or assume "
-    "values the user did not actually give, and NEVER move forward on nonsense.\n"
-    "• Fix obvious gene typos (CTRF→CFTR, EGRF→EGFR) and recognise drug names.\n"
-    "• Ask for what's missing one item at a time, briefly and naturally.\n"
-    "• Set ready_to_dock=true ONLY when you have (a target OR a disease) AND a tier.\n"
-    "• Set analyze_only=true if the user only wants a molecule's drug-likeness, no docking.\n\n"
-    "Reply with ONLY a JSON object and nothing else:\n"
-    '{"disease": <string|null>, "target": <gene or 4-char PDB ID|null>, '
-    '"ligand": <drug name or SMILES the user gave|null>, '
+    "You are MUMO — a warm, brilliant drug-discovery partner: part pharmacologist, part "
+    "computational chemist, part toxicologist, and a patient TUTOR. You talk like a smart, "
+    "kind expert helping a curious student.\n\n"
+    "WHAT YOU CAN DO:\n"
+    "1) ANSWER any drug-discovery / pharmacology / chemistry / biology question (what is "
+    "CFTR, what is molecular docking, what is a good binding score, what is ADMET…).\n"
+    "2) TEACH step by step. If the user is unsure, doesn't know a term, or asks "
+    "'how / why / what', walk them through the procedure step by step: say WHAT each step "
+    "does and WHY it matters, define EVERY piece of jargon in plain words, and give the "
+    "background knowledge they need before moving on. Never assume prior knowledge.\n"
+    "3) EXPLAIN RESULTS. When docking results are provided below, use the ACTUAL numbers to "
+    "answer ('is this score good?', 'which ligand is best and why?', 'explain these "
+    "interactions'). Read affinity as: about -7 kcal/mol or lower = strong, -5 to -7 = "
+    "moderate, above -5 = weak.\n"
+    "4) RUN DOCKING. To dock you need a TARGET (gene/protein like CFTR or EGFR, or a "
+    "4-char PDB ID like 6LU7) OR a DISEASE (you derive the target). A LIGAND is optional "
+    "(a drug name like aspirin, a SMILES, or SEVERAL for a comparison); if none is given "
+    "you scout candidates automatically. Report TIER defaults to Standard — don't pester "
+    "for it.\n\n"
+    "HOW TO BEHAVE:\n"
+    "• Read every message IN CONTEXT of the whole conversation and what is already known. "
+    "Remember what the user already told you; never re-ask it.\n"
+    "• Understand messy, vague or multi-part requests. For a comparison "
+    "('compare aspirin and ibuprofen on EGFR') return ligand as a LIST.\n"
+    "• Fix obvious gene typos (CTRF→CFTR, EGRF→EGFR); map plain descriptions to genes "
+    "('lung mucus protein'→MUC5B).\n"
+    "• If a message is random/off-topic ('hi','ok','m'), reply warmly and gently steer "
+    "back. NEVER invent values the user did not give.\n"
+    "• Choose ACTION each turn:\n"
+    "   - 'dock'    : you have a target OR disease and the user wants to run it.\n"
+    "   - 'analyze' : the user only wants a molecule's drug-likeness, no docking.\n"
+    "   - 'chat'    : everything else — answering, teaching, explaining results, or asking "
+    "ONE clarifying question. When unsure, use 'chat'.\n\n"
+    "Reply with ONLY a JSON object, nothing else:\n"
+    '{"action": "chat"|"dock"|"analyze", '
+    '"disease": <string|null>, "target": <gene or 4-char PDB ID|null>, '
+    '"ligand": <drug name, SMILES, or a LIST of them|null>, '
     '"tier": <"Simple"|"Standard"|"Ambitious"|null>, '
-    '"reply": "<your short friendly message>", '
-    '"ready_to_dock": <true|false>, "analyze_only": <true|false>}'
+    '"reply": "<your message — a full helpful/teaching answer, an explanation of the '
+    'results, a short clarifying question, or a brief \'running it now\' note>"}'
 )
 
 
@@ -160,62 +178,96 @@ def _history_text(n=10):
     return "\n".join(f'{m["role"]}: {m["content"]}' for m in ss.messages[-n:])
 
 
+def _resolve_ligands(lig):
+    """Resolve a ligand (name/SMILES) OR a list of them into [{label, smiles}]."""
+    if not lig:
+        return []
+    items = lig if isinstance(lig, list) else [lig]
+    out = []
+    for x in items:
+        smi, label = resolve_ligand(str(x))
+        if smi:
+            out.append({"label": label, "smiles": smi})
+    return out
+
+
+def _results_context():
+    """Summarise the latest results so the brain can discuss them with real numbers."""
+    r = ss.results
+    if not r:
+        return "Docking results so far: none yet."
+    if "druglikeness" in r:
+        return (f"Latest analysis — drug-likeness of {r['lig_label']} "
+                f"({r['lig_smiles']}): {_json.dumps(r['druglikeness'])}")
+    rdf = r["rdf"]
+    rows = []
+    for _, row in rdf.head(5).iterrows():
+        rows.append(f"- {row['Ligand']}: {row['Best affinity (kcal/mol)']} kcal/mol, "
+                    f"{row['H-bonds']} H-bonds, {row['Total interactions']} total interactions; "
+                    f"residues: {row['All interacting residues']}")
+    return (f"Latest docking results — target {r['meta']['gene']} "
+            f"(more negative kcal/mol = stronger binding):\n" + "\n".join(rows))
+
+
 def converse(msg):
-    """One conversational turn, driven by the LLM (with a minimal no-key fallback)."""
+    """One conversational turn — MUMO can teach, answer, explain results, or dock."""
     ss.messages.append({"role": "user", "content": msg})
     c = ss.convo
 
-    # ── no LLM key: minimal rule-based fallback ──
+    # ── no LLM key: minimal rule-based fallback (dock-only) ──
     if _llm is None:
         intent = parse_intent(msg, None)["intent"]
         if intent["target"] or intent["disease"]:
             c.update({"target": intent["target"], "disease": intent["disease"], "tier": "Standard"})
             if intent["ligand"]:
-                smi, label = resolve_ligand(intent["ligand"])
-                if smi:
-                    c["ligand_smiles"], c["ligand_label"] = smi, label
-            say("Running it now (basic mode — add an LLM key for full conversation). Results below. ⚙️")
+                c["ligand"] = intent["ligand"]
+            c["ligand_objs"] = _resolve_ligands(c.get("ligand"))
+            say("Running it now (basic mode — add an LLM key to unlock questions, "
+                "teaching and result explanations). Results below. ⚙️")
             ss.run_now = True
         else:
             say("Tell me a target and a ligand, e.g. *“dock 6LU7 with aspirin”*. "
-                "(Add an LLM key in secrets for smart conversation.)")
+                "(Add an LLM key in secrets to unlock questions, teaching and smart chat.)")
         return
 
-    # ── LLM-driven turn ──
+    # ── LLM-driven turn (full context: known slots + latest results + history) ──
     known = {k: c.get(k) for k in ("disease", "target", "ligand", "tier")}
-    prompt = (f"Known so far: {_json.dumps(known)}\n\n"
-              f"Conversation:\n{_history_text()}\n\n"
+    prompt = (f"Known so far: {_json.dumps(known)}\n"
+              f"{_results_context()}\n\n"
+              f"Conversation:\n{_history_text(14)}\n\n"
               f'The user just said: "{msg}"\n\nReturn the JSON.')
     try:
         with st.spinner("Thinking…"):
-            raw = _llm.chat(CONV_SYSTEM, prompt, temperature=0.3, max_tokens=400)
+            raw = _llm.chat(CONV_SYSTEM, prompt, temperature=0.3, max_tokens=900)
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         data = _json.loads(match.group(0))
     except Exception:
         say("Sorry — my brain hiccupped just now. Could you say that again?")
         return
 
-    for k in ("disease", "target", "ligand", "tier"):
+    for k in ("disease", "target", "tier"):
         if data.get(k):
             c[k] = data[k]
+    if data.get("ligand"):
+        c["ligand"] = data["ligand"]
     say(data.get("reply") or "Okay.")
 
+    action = (data.get("action") or "chat").lower()
+
     # analyze-only → drug-likeness, no docking
-    if data.get("analyze_only") and c.get("ligand"):
-        smi, label = resolve_ligand(str(c["ligand"]))
+    if action == "analyze" and c.get("ligand"):
+        one = c["ligand"][0] if isinstance(c["ligand"], list) else c["ligand"]
+        smi, label = resolve_ligand(str(one))
         if smi:
             ss.results = {"druglikeness": druglikeness(smi), "lig_label": label, "lig_smiles": smi}
         return
 
-    if data.get("ready_to_dock"):
-        # always resolve the CURRENT ligand fresh (don't reuse a previous one)
-        if c.get("ligand"):
-            smi, label = resolve_ligand(str(c["ligand"]))
-            c["ligand_smiles"], c["ligand_label"] = (smi, label) if smi else (None, None)
-        else:
-            c["ligand_smiles"] = None
+    if action == "dock":
+        # resolve the CURRENT ligand(s) fresh (supports a single name OR a comparison list)
+        c["ligand_objs"] = _resolve_ligands(c.get("ligand"))
         c["tier"] = c.get("tier") or "Standard"
         ss.run_now = True
+    # action == "chat" → the reply IS the whole answer; nothing more to run
 
 
 def build_target(c):
@@ -257,8 +309,8 @@ def run_pipeline(status_area):
         return
 
     tgt = build_target(c)
-    if c.get("ligand_smiles"):
-        ligands = [{"label": c["ligand_label"], "smiles": c["ligand_smiles"]}]
+    if c.get("ligand_objs"):
+        ligands = c["ligand_objs"]
     else:
         n = c.get("n_ligands") or 3
         status_area.write(f"🔬 Scouting {n} ligands for {tgt['gene']}…")
