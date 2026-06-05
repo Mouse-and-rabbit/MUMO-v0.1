@@ -85,7 +85,9 @@ st.markdown("""
 
 /* Welcome hero */
 .mumo-hero {
-    text-align:center; margin-top: 11vh; padding: 2.8rem 1.5rem;
+    text-align:center; margin: 9vh auto 0; padding: 3rem 2rem;
+    max-width: 680px;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
     border-radius: 24px;
     background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.008));
     border: 1px solid rgba(148,163,184,0.10);
