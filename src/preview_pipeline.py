@@ -92,7 +92,7 @@ def run_full_dock(tgt, ligands):
                     "All interacting residues": "; ".join(ia["interacting_residues"]) or "-",
                 })
                 viz[label] = {"complex": cmplx,
-                              "ia": {"lines": ia["lines"], "residue_numbers": ia["residue_numbers"]}}
+                              "ia": {"lines": ia["lines"], "residue_numbers": ia["residue_numbers"], "svg_2d": ia.get("svg_2d", "")}}
             except Exception as le:
                 rows.append({"Ligand": label, "SMILES": lig["smiles"],
                              "Best affinity (kcal/mol)": "FAILED", "Poses": 0,
@@ -378,45 +378,65 @@ if ss.get("results_df") is not None:
         st.caption(f"(Report unavailable: {e})")
 
     if ss.get("viz"):
-        st.markdown("### 🧪 3D Interaction View  (rotate · zoom · screenshot for your paper)")
+        st.markdown("### 🔬 Docking Pose & Interaction Views")
         choice = st.selectbox("Show pose for ligand", list(ss["viz"].keys()))
-
-        with st.expander("⚙️ Visualization settings", expanded=True):
-            r1 = st.columns(4)
-            protein_style = r1[0].selectbox("Protein style",
-                ["cartoon", "surface", "cartoon+surface", "stick", "line"])
-            protein_color = r1[1].selectbox("Protein color",
-                ["spectrum", "secondary structure", "grey", "white"])
-            ligand_style = r1[2].selectbox("Ligand style",
-                ["stick", "ball-and-stick", "sphere", "line"])
-            ligand_carbon = r1[3].selectbox("Ligand color",
-                ["greenCarbon", "cyanCarbon", "yellowCarbon", "magentaCarbon",
-                 "orangeCarbon", "whiteCarbon"])
-
-            r2 = st.columns(4)
-            background = r2[0].color_picker("Background", "#0a0f1e")
-            surface_opacity = r2[1].slider("Surface opacity", 0.0, 1.0, 0.6, 0.05)
-            surface_color = r2[2].selectbox("Surface color", ["white", "grey", "lightblue"])
-            spin = r2[3].checkbox("Auto-spin", value=False)
-
-            r3 = st.columns(3)
-            show_residues = r3[0].checkbox("Interacting residues", value=True)
-            show_interactions = r3[1].checkbox("Interaction lines", value=True)
-            show_labels = r3[2].checkbox("Residue labels", value=True)
-
-        opts = {
-            "protein_style": protein_style, "protein_color": protein_color,
-            "ligand_style": ligand_style, "ligand_carbon": ligand_carbon,
-            "background": background, "surface_opacity": surface_opacity,
-            "surface_color": surface_color, "spin": spin,
-            "show_residues": show_residues, "show_interactions": show_interactions,
-            "show_labels": show_labels,
-        }
-        st.caption("Dashed lines: blue=H-bond · grey=hydrophobic · cyan=halogen · "
-                   "green=π-stack · orange=salt bridge. Change any setting and the view updates.")
         entry = ss["viz"][choice]
-        try:
-            html = render_complex_html(entry["complex"], entry["ia"], options=opts)
-            components.html(html, height=580)
-        except Exception as e:
-            st.warning(f"Could not render 3D view for {choice}: {e}")
+
+        tab_2d, tab_3d = st.tabs(["📊 2D Interaction Diagram", "🧪 3D Interaction View"])
+
+        with tab_2d:
+            svg_content = entry["ia"].get("svg_2d", "")
+            if svg_content:
+                st.markdown(
+                    f'<div style="background-color: white; padding: 20px; border-radius: 12px; border: 1px solid rgba(0,212,170,0.2); box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: flex; justify-content: center; align-items: center; max-width: 600px; margin: 2rem auto 1rem auto;">{svg_content}</div>',
+                    unsafe_allow_html=True
+                )
+                st.caption(
+                    "<div style='text-align: center; color: rgba(226,232,240,0.65); font-size: 0.8rem; margin-top: 0.5rem;'>"
+                    "🔵 H-bond &nbsp;·&nbsp; 🟤 Hydrophobic &nbsp;·&nbsp; 🟠 Salt bridge &nbsp;·&nbsp; 🟢 Pi-stack &nbsp;·&nbsp; 🟣 Pi-cation &nbsp;·&nbsp; 🟡 Halogen<br>"
+                    "<i>Note: Residue labels indicate the specific receptor residues interacting with highlighted ligand atoms.</i>"
+                    "</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.info("No 2D interaction diagram available.")
+
+        with tab_3d:
+            with st.expander("⚙️ Visualization settings", expanded=True):
+                r1 = st.columns(4)
+                protein_style = r1[0].selectbox("Protein style",
+                    ["cartoon", "surface", "cartoon+surface", "stick", "line"])
+                protein_color = r1[1].selectbox("Protein color",
+                    ["spectrum", "secondary structure", "grey", "white"])
+                ligand_style = r1[2].selectbox("Ligand style",
+                    ["stick", "ball-and-stick", "sphere", "line"])
+                ligand_carbon = r1[3].selectbox("Ligand color",
+                    ["greenCarbon", "cyanCarbon", "yellowCarbon", "magentaCarbon",
+                     "orangeCarbon", "whiteCarbon"])
+
+                r2 = st.columns(4)
+                background = r2[0].color_picker("Background", "#0a0f1e")
+                surface_opacity = r2[1].slider("Surface opacity", 0.0, 1.0, 0.6, 0.05)
+                surface_color = r2[2].selectbox("Surface color", ["white", "grey", "lightblue"])
+                spin = r2[3].checkbox("Auto-spin", value=False)
+
+                r3 = st.columns(3)
+                show_residues = r3[0].checkbox("Interacting residues", value=True)
+                show_interactions = r3[1].checkbox("Interaction lines", value=True)
+                show_labels = r3[2].checkbox("Residue labels", value=True)
+
+            opts = {
+                "protein_style": protein_style, "protein_color": protein_color,
+                "ligand_style": ligand_style, "ligand_carbon": ligand_carbon,
+                "background": background, "surface_opacity": surface_opacity,
+                "surface_color": surface_color, "spin": spin,
+                "show_residues": show_residues, "show_interactions": show_interactions,
+                "show_labels": show_labels,
+            }
+            st.caption("Dashed lines: blue=H-bond · grey=hydrophobic · cyan=halogen · "
+                       "green=π-stack · orange=salt bridge. Change any setting and the view updates.")
+            try:
+                html = render_complex_html(entry["complex"], entry["ia"], options=opts)
+                components.html(html, height=580)
+            except Exception as e:
+                st.warning(f"Could not render 3D view for {choice}: {e}")

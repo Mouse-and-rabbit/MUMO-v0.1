@@ -62,7 +62,7 @@ def dock_pipeline(tgt, ligands, vina, data_dir, venv_dir, status=lambda m: None)
                 "All interacting residues": "; ".join(ia["interacting_residues"]) or "-",
             })
             viz[label] = {"complex": cmplx,
-                          "ia": {"lines": ia["lines"], "residue_numbers": ia["residue_numbers"]}}
+                          "ia": {"lines": ia["lines"], "residue_numbers": ia["residue_numbers"], "svg_2d": ia.get("svg_2d", "")}}
         except Exception as le:
             rows.append({"Ligand": label, "SMILES": lig["smiles"],
                          "Best affinity (kcal/mol)": "FAILED", "Poses": 0,

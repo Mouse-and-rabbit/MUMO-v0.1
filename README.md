@@ -30,14 +30,14 @@ All free, no API key required.
 ## Run locally (Windows)
 
 ```bash
-.venv\Scripts\streamlit.exe run src/preview_pipeline.py
+.venv\Scripts\streamlit.exe run src/mumo_chat.py
 ```
 
 ## Deploy on Streamlit Community Cloud
 
 1. Push this repo to GitHub.
 2. On [share.streamlit.io](https://share.streamlit.io) → **New app**.
-3. Pick this repo, set **Main file path** to `src/preview_pipeline.py`.
+3. Pick this repo, set **Main file path** to `src/mumo_chat.py`.
 4. Deploy. Dependencies install automatically from `environment.yml`.
 
 ---

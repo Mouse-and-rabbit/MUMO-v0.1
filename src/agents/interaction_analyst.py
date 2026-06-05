@@ -66,6 +66,7 @@ def _empty_result(note):
         "n_halogen": 0, "n_pication": 0, "n_waterbridges": 0,
         "interacting_residues": [], "lines": [], "residue_numbers": [],
         "note": note,
+        "svg_2d": "",
     }
 
 
@@ -210,7 +211,118 @@ def _run_plip(receptor_pdb, ligand_pdbqt, out_complex_pdb):
         "residue_numbers": sorted({i.resnr for group in
                                    (hbonds, hydrophobic, pistacking, saltbridges, halogens, pication)
                                    for i in group}),
+        "svg_2d": generate_2d_interaction_svg(out_complex_pdb, site),
     }
+
+
+def generate_2d_interaction_svg(complex_pdb_path, site):
+    """
+    Generates a 2D interaction diagram of the ligand showing color-coded
+    highlighted atoms and residue labels for interactions from PLIP.
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import rdDepictor
+        from rdkit.Chem.Draw import rdMolDraw2D
+
+        # Read ligand lines from complex_pdb_path (chain Z, residue name LIG)
+        lig_lines = []
+        with open(complex_pdb_path) as f:
+            for line in f:
+                if "LIG" in line and (line.startswith("HETATM") or line.startswith("ATOM")):
+                    lig_lines.append(line)
+        if not lig_lines:
+            return ""
+        
+        pdb_block = "".join(lig_lines)
+        mol = Chem.MolFromPDBBlock(pdb_block, sanitize=False)
+        if mol is None:
+            return ""
+
+        # Map PDB serial numbers to RDKit indices
+        pdb_to_rdkit = {}
+        for atom in mol.GetAtoms():
+            info = atom.GetPDBResidueInfo()
+            if info:
+                pdb_to_rdkit[info.GetSerialNumber()] = atom.GetIdx()
+
+        atom_notes = {}
+        atom_colors = {}
+        highlight_atoms = []
+
+        def add_interaction(serial, label, color_rgb):
+            idx = pdb_to_rdkit.get(serial)
+            if idx is not None:
+                if idx not in atom_notes:
+                    atom_notes[idx] = []
+                atom_notes[idx].append(label)
+                atom_colors[idx] = color_rgb
+                if idx not in highlight_atoms:
+                    highlight_atoms.append(idx)
+
+        # 1. Hydrogen bonds (Donor-Acceptor)
+        for b in list(site.hbonds_ldon) + list(site.hbonds_pdon):
+            serial = b.a_orig_idx if b.protisdon else b.d_orig_idx
+            res_label = f"{b.restype}{b.resnr}({b.reschain}) [H-bond]"
+            add_interaction(serial, res_label, (0.18, 0.49, 0.86))  # Premium blue
+
+        # 2. Hydrophobic contacts
+        for c in site.hydrophobic_contacts:
+            serial = c.ligatom_orig_idx
+            res_label = f"{c.restype}{c.resnr}({c.reschain}) [Hydroph]"
+            add_interaction(serial, res_label, (0.55, 0.55, 0.55))  # Dark grey
+
+        # 3. Halogen bonds
+        for x in site.halogen_bonds:
+            serial = x.don_orig_idx if x.don_orig_idx in pdb_to_rdkit else x.acc_orig_idx
+            res_label = f"{x.restype}{x.resnr}({x.reschain}) [Halogen]"
+            add_interaction(serial, res_label, (0.0, 0.72, 0.72))  # Teal/Cyan
+
+        # 4. Salt bridges
+        for s in list(site.saltbridge_lneg) + list(site.saltbridge_pneg):
+            res_label = f"{s.restype}{s.resnr}({s.reschain}) [Salt Bridge]"
+            group = s.negative if s.protispos else s.positive
+            if hasattr(group, "atoms_orig_idx"):
+                for serial in group.atoms_orig_idx:
+                    add_interaction(serial, res_label, (1.0, 0.5, 0.0))  # Orange
+
+        # 5. Pi-stacking
+        for p in site.pistacking:
+            res_label = f"{p.restype}{p.resnr}({p.reschain}) [Pi-stack]"
+            if hasattr(p.ligandring, "atoms_orig_idx"):
+                for serial in p.ligandring.atoms_orig_idx:
+                    add_interaction(serial, res_label, (0.0, 0.72, 0.2))  # Green
+
+        # 6. Pi-cation
+        for p in list(site.pication_laro) + list(site.pication_paro):
+            res_label = f"{p.restype}{p.resnr}({p.reschain}) [Pi-cation]"
+            if hasattr(p, "ring") and hasattr(p.ring, "atoms_orig_idx") and any(a in pdb_to_rdkit for a in p.ring.atoms_orig_idx):
+                for serial in p.ring.atoms_orig_idx:
+                    add_interaction(serial, res_label, (0.8, 0.2, 0.8))  # Purple
+            elif hasattr(p, "charge") and hasattr(p.charge, "atoms_orig_idx"):
+                for serial in p.charge.atoms_orig_idx:
+                    add_interaction(serial, res_label, (0.8, 0.2, 0.8))  # Purple
+
+        # Apply notes (labels) to RDKit mol
+        for idx, notes in atom_notes.items():
+            note_text = ", ".join(notes)
+            mol.GetAtomWithIdx(idx).SetProp("atomNote", note_text)
+
+        # Generate 2D depiction coordinates
+        rdDepictor.Compute2DCoords(mol)
+
+        # Render molecule to SVG format on a white card
+        drawer = rdMolDraw2D.MolDraw2DSVG(550, 480)
+        opts = drawer.drawOptions()
+        opts.setBackgroundColour((1.0, 1.0, 1.0, 1.0))
+        opts.annotationFontScale = 0.82
+        
+        drawer.DrawMolecule(mol, highlightAtoms=highlight_atoms, highlightAtomColors=atom_colors)
+        drawer.FinishDrawing()
+        return drawer.GetDrawingText()
+    except Exception as e:
+        print(f"Error generating 2D SVG: {e}")
+        return ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────

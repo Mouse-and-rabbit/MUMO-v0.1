@@ -36,6 +36,75 @@ VINA = ensure_vina()
 
 st.set_page_config(page_title="MUMO", page_icon="🧬", layout="centered")
 
+# ── MUMO product theme (dark, gradient logo, teal accent) ──
+st.markdown("""
+<style>
+.stApp {
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(45,212,191,0.08), transparent 60%),
+      radial-gradient(900px 500px at 0% 110%, rgba(99,102,241,0.10), transparent 55%),
+      #0a0e1a;
+}
+.block-container { padding-top: 2.5rem; max-width: 840px; }
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background: #0c1120;
+    border-right: 1px solid rgba(148,163,184,0.08);
+}
+[data-testid="stSidebar"] .stButton button {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(148,163,184,0.12);
+    color: #cbd5e1; border-radius: 10px;
+    text-align: left; justify-content: flex-start; font-weight: 500;
+}
+[data-testid="stSidebar"] .stButton button:hover {
+    border-color: rgba(45,212,191,0.5); color: #fff;
+    background: rgba(45,212,191,0.06);
+}
+.mumo-brand {
+    display:flex; align-items:center; gap:.5rem;
+    font-size:1.5rem; font-weight:800; letter-spacing:.5px;
+    margin:.2rem 0 1rem .1rem;
+    background: linear-gradient(90deg,#818cf8,#22d3ee,#34d399);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+}
+
+/* Chat bubbles + input */
+[data-testid="stChatMessage"] {
+    background: rgba(255,255,255,0.025);
+    border: 1px solid rgba(148,163,184,0.10);
+    border-radius: 14px; padding:.4rem .6rem;
+}
+[data-testid="stChatInput"] {
+    border: 1px solid rgba(148,163,184,0.15) !important;
+    border-radius: 16px !important; background: #0f1626 !important;
+}
+
+/* Welcome hero */
+.mumo-hero {
+    text-align:center; margin-top: 11vh; padding: 2.8rem 1.5rem;
+    border-radius: 24px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.008));
+    border: 1px solid rgba(148,163,184,0.10);
+}
+.mumo-hero-title {
+    font-size: 4.6rem; font-weight: 900; line-height:1; letter-spacing:1px; margin:0;
+    background: linear-gradient(90deg,#818cf8,#22d3ee,#34d399);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+}
+.mumo-hero-sub {
+    margin: 1.3rem auto 0; max-width: 580px;
+    font-size: 1.4rem; font-weight: 600; color:#e6edf6; line-height:1.45;
+}
+.mumo-pills {
+    display:flex; gap:1.7rem; justify-content:center; flex-wrap:wrap;
+    margin-top: 1.7rem; color: rgba(148,163,184,0.75); font-size:.92rem;
+}
+.mumo-pills span { white-space:nowrap; }
+</style>
+""", unsafe_allow_html=True)
+
 # ── session ──
 ss = st.session_state
 ss.setdefault("messages", [])     # [{role, content}]
@@ -239,7 +308,7 @@ def run_pipeline(status_area):
 
 # ── left sidebar: history ──
 with st.sidebar:
-    st.markdown("### 🧬 MUMO")
+    st.markdown("<div class='mumo-brand'>🧬 MUMO</div>", unsafe_allow_html=True)
     if st.button("➕  New chat", use_container_width=True):
         if ss.messages:
             title = next((m["content"] for m in ss.messages if m["role"] == "user"), "Chat")
@@ -285,66 +354,90 @@ def render_results():
         st.download_button("⬇ CSV", rdf.to_csv(index_label="Rank").encode("utf-8"),
                            file_name=f"MUMO_{r['meta']['gene']}.csv", mime="text/csv")
         if r.get("viz"):
-            st.markdown("##### 🧪 3D pose & interactions")
+            st.markdown("##### 🔬 Pose & Interaction Views")
             choice = st.selectbox("Ligand", list(r["viz"].keys()), label_visibility="collapsed")
-
-            with st.expander("⚙️ Visualization settings", expanded=False):
-                a = st.columns(3)
-                protein_style = a[0].selectbox("Protein style", ["cartoon", "cartoon+surface",
-                                               "surface", "stick", "line"], key="vp_style")
-                protein_color = a[1].selectbox("Protein color", ["spectrum",
-                                               "secondary structure", "grey", "white"], key="vp_color")
-                surface_color = a[2].selectbox("Surface color", ["white", "grey", "lightblue"], key="vp_surfc")
-
-                f = st.columns(3)
-                cartoon_style = f[0].selectbox("Ribbon style", ["default", "trace",
-                                               "rectangle", "edged"], key="vp_cstyle")
-                protein_opacity = f[1].slider("Protein opacity", 0.2, 1.0, 1.0, 0.05, key="vp_op")
-                label_size = f[2].slider("Label size", 8, 20, 11, 1, key="v_lsize")
-
-                b = st.columns(3)
-                ligand_style = b[0].selectbox("Ligand style", ["stick", "ball-and-stick",
-                                              "sphere", "line"], key="vl_style")
-                ligand_carbon = b[1].selectbox("Ligand color", ["greenCarbon", "cyanCarbon",
-                                               "yellowCarbon", "magentaCarbon", "orangeCarbon",
-                                               "whiteCarbon"], key="vl_color")
-                ligand_radius = b[2].slider("Ligand thickness", 0.1, 0.4, 0.22, 0.02, key="vl_rad")
-
-                d = st.columns(2)
-                surface_opacity = d[0].slider("Surface opacity", 0.0, 1.0, 0.5, 0.05, key="v_surf")
-                zoom = d[1].slider("Zoom", 0.3, 1.5, 0.6, 0.05, key="v_zoom")
-
-                e = st.columns(4)
-                show_residues = e[0].checkbox("Residues", value=True, key="v_res")
-                show_interactions = e[1].checkbox("Interactions", value=True, key="v_int")
-                show_labels = e[2].checkbox("Labels", value=True, key="v_lab")
-                spin = e[3].checkbox("Spin", value=False, key="v_spin")
-
-                pocket_only = st.checkbox("Pocket only (lighter view)", value=False, key="v_pocket")
-
-            opts = {"protein_style": protein_style, "protein_color": protein_color,
-                    "cartoon_style": cartoon_style, "protein_opacity": protein_opacity,
-                    "surface_color": surface_color, "surface_opacity": surface_opacity,
-                    "ligand_style": ligand_style, "ligand_carbon": ligand_carbon,
-                    "ligand_radius": ligand_radius, "zoom": zoom,
-                    "show_residues": show_residues, "show_interactions": show_interactions,
-                    "show_labels": show_labels, "label_size": label_size, "spin": spin,
-                    "pocket_only": pocket_only,
-                    "background": theme_bg()}   # bg auto-follows the app theme
             entry = r["viz"][choice]
-            try:
-                components.html(render_complex_html(entry["complex"], entry["ia"],
-                                options=opts, height=520), height=540)
-            except Exception as e:
-                st.caption(f"(3D view unavailable: {e})")
+
+            tab_2d, tab_3d = st.tabs(["📊 2D Diagram", "🧪 3D Pose"])
+
+            with tab_2d:
+                svg_content = entry["ia"].get("svg_2d", "")
+                if svg_content:
+                    st.markdown(
+                        f'<div style="background-color: white; padding: 20px; border-radius: 12px; border: 1px solid rgba(0,212,170,0.2); box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: flex; justify-content: center; align-items: center; max-width: 600px; margin: 1.5rem auto 0.5rem auto;">{svg_content}</div>',
+                        unsafe_allow_html=True
+                    )
+                    st.caption(
+                        "<div style='text-align: center; color: rgba(226,232,240,0.65); font-size: 0.8rem; margin-top: 0.5rem;'>"
+                        "🔵 H-bond &nbsp;·&nbsp; 🟤 Hydrophobic &nbsp;·&nbsp; 🟠 Salt bridge &nbsp;·&nbsp; 🟢 Pi-stack &nbsp;·&nbsp; 🟣 Pi-cation &nbsp;·&nbsp; 🟡 Halogen<br>"
+                        "<i>Note: Residue labels indicate the specific receptor residues interacting with highlighted ligand atoms.</i>"
+                        "</div>",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.info("No 2D interaction diagram available.")
+
+            with tab_3d:
+                with st.expander("⚙️ Visualization settings", expanded=False):
+                    a = st.columns(3)
+                    protein_style = a[0].selectbox("Protein style", ["cartoon", "cartoon+surface",
+                                                   "surface", "stick", "line"], key="vp_style")
+                    protein_color = a[1].selectbox("Protein color", ["spectrum",
+                                                   "secondary structure", "grey", "white"], key="vp_color")
+                    surface_color = a[2].selectbox("Surface color", ["white", "grey", "lightblue"], key="vp_surfc")
+
+                    f = st.columns(3)
+                    cartoon_style = f[0].selectbox("Ribbon style", ["default", "trace",
+                                                   "rectangle", "edged"], key="vp_cstyle")
+                    protein_opacity = f[1].slider("Protein opacity", 0.2, 1.0, 1.0, 0.05, key="vp_op")
+                    label_size = f[2].slider("Label size", 8, 20, 11, 1, key="v_lsize")
+
+                    b = st.columns(3)
+                    ligand_style = b[0].selectbox("Ligand style", ["stick", "ball-and-stick",
+                                                  "sphere", "line"], key="vl_style")
+                    ligand_carbon = b[1].selectbox("Ligand color", ["greenCarbon", "cyanCarbon",
+                                                   "yellowCarbon", "magentaCarbon", "orangeCarbon",
+                                                   "whiteCarbon"], key="vl_color")
+                    ligand_radius = b[2].slider("Ligand thickness", 0.1, 0.4, 0.22, 0.02, key="vl_rad")
+
+                    d = st.columns(2)
+                    surface_opacity = d[0].slider("Surface opacity", 0.0, 1.0, 0.5, 0.05, key="v_surf")
+                    zoom = d[1].slider("Zoom", 0.3, 1.5, 0.6, 0.05, key="v_zoom")
+
+                    e = st.columns(4)
+                    show_residues = e[0].checkbox("Residues", value=True, key="v_res")
+                    show_interactions = e[1].checkbox("Interactions", value=True, key="v_int")
+                    show_labels = e[2].checkbox("Labels", value=True, key="v_lab")
+                    spin = e[3].checkbox("Spin", value=False, key="v_spin")
+
+                    pocket_only = st.checkbox("Pocket only (lighter view)", value=False, key="v_pocket")
+
+                opts = {"protein_style": protein_style, "protein_color": protein_color,
+                        "cartoon_style": cartoon_style, "protein_opacity": protein_opacity,
+                        "surface_color": surface_color, "surface_opacity": surface_opacity,
+                        "ligand_style": ligand_style, "ligand_carbon": ligand_carbon,
+                        "ligand_radius": ligand_radius, "zoom": zoom,
+                        "show_residues": show_residues, "show_interactions": show_interactions,
+                        "show_labels": show_labels, "label_size": label_size, "spin": spin,
+                        "pocket_only": pocket_only,
+                        "background": theme_bg()}   # bg auto-follows the app theme
+                try:
+                    components.html(render_complex_html(entry["complex"], entry["ia"],
+                                    options=opts, height=520), height=540)
+                except Exception as e:
+                    st.caption(f"(3D view unavailable: {e})")
 
 
 def render_chat():
     if not ss.messages:
-        st.markdown("<div style='text-align:center;margin-top:18vh;'>"
-                    "<h1>🧬 MUMO</h1>"
-                    "<p style='opacity:0.6;'>Tell me what to work on — a disease, a target, or a molecule.<br>"
-                    "I'll ask what I need, then dock it.</p></div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div class='mumo-hero'>"
+            "<div class='mumo-hero-title'>🧬 MUMO</div>"
+            "<p class='mumo-hero-sub'>Tell me what to work on — a disease, a target, "
+            "or a molecule. I'll ask what I need, then dock it.</p>"
+            "<div class='mumo-pills'><span>Disease, Target, or Molecule</span>"
+            "<span>Analysis &amp; Design</span><span>Docking Results</span></div>"
+            "</div>", unsafe_allow_html=True)
     for m in ss.messages:
         with st.chat_message(m["role"], avatar="🧬" if m["role"] == "assistant" else "🧑"):
             st.markdown(m["content"])
