@@ -144,62 +144,93 @@ def prepare_receptor(cleaned_pdb_path, output_pdbqt_path, venv_bin_dir):
     else:
         raise FileNotFoundError(f"Expected prepared receptor file not found: {expected_output}")
 
-def prepare_ligand(smiles, output_pdbqt_path):
+def _mol_from_smiles_at_ph(smiles, ph=7.4):
     """
-    Converts a ligand from a text-based SMILES string into a 3D structure in PDBQT format.
-    1. SMILES is converted to a 2D molecule structure.
-    2. Explicit hydrogens are added (crucial for hydrogen bonds, which act as molecular 'handshakes').
-    3. A 3D shape is generated (embedded) and optimized (minimized) using a chemical force field (MMFF94).
-    4. Meeko formats the 3D molecule with Vina atom types and rotatable bonds.
+    Protonate a SMILES at a physiological pH with OpenBabel, returning an RDKit mol
+    with explicit hydrogens and the correct formal charges (e.g. -COOH -> -COO-,
+    -NH2 -> -NH3+ at pH 7.4). Returns None on any failure so the caller can fall
+    back to the plain RDKit path.
     """
-    print(f"[Prep] Converting SMILES '{smiles}' to 3D structure...")
-    
-    # Read SMILES string
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        raise ValueError(f"Invalid SMILES string provided: {smiles}")
-        
-    # Add explicit hydrogens (PDB structures of ligands need hydrogens for docking physics)
-    mol = Chem.AddHs(mol)
-    
-    # Generate 3D coordinates using distance geometry
-    embed_status = AllChem.EmbedMolecule(mol, randomSeed=42)
-    if embed_status != 0:
-        print("[Warning] Standard 3D embedding failed. Trying robust embedding parameters...")
-        embed_status = AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
-        if embed_status != 0:
+    try:
+        from openbabel import pybel
+        obmol = pybel.readstring("smi", smiles)
+        # AddHydrogens(polaronly=False, correctForPH=True, pH=ph)
+        obmol.OBMol.AddHydrogens(False, True, ph)
+        molblock = obmol.write("mol")
+        m = Chem.MolFromMolBlock(molblock, removeHs=False)
+        return m
+    except Exception:
+        return None
+
+
+def prepare_ligand(smiles, output_pdbqt_path, ph=7.4, n_confs=8, seed=42):
+    """
+    Convert a SMILES into a docking-ready PDBQT, with industrial-grade preparation:
+      1. PROTONATE at physiological pH (default 7.4) so acids/bases carry the right
+         charge — correct hydrogen bonds and salt bridges. (OpenBabel; RDKit fallback)
+      2. Generate SEVERAL 3D conformers with ETKDGv3 and keep the LOWEST-ENERGY one
+         (MMFF94) — a better, more reproducible starting geometry than a single embed.
+      3. Meeko assigns Vina atom types, Gasteiger charges and rotatable bonds.
+    """
+    print(f"[Prep] Preparing ligand '{smiles}' (protonated at pH {ph})...")
+
+    mol = _mol_from_smiles_at_ph(smiles, ph)
+    if mol is None:                                   # fallback: plain RDKit prep
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            raise ValueError(f"Invalid SMILES string provided: {smiles}")
+        mol = Chem.AddHs(mol)
+
+    # ETKDGv3 multi-conformer embedding (deterministic via fixed seed)
+    params = AllChem.ETKDGv3()
+    params.randomSeed = seed
+    conf_ids = list(AllChem.EmbedMultipleConfs(mol, numConfs=max(1, n_confs), params=params))
+    if not conf_ids:
+        print("[Warning] ETKDG embedding failed. Trying robust random-coords embedding...")
+        if AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=seed) != 0:
             raise RuntimeError("Failed to generate 3D coordinates for the ligand.")
-            
-    # Optimize the structure to find the lowest energy (most natural) conformation
-    optimization_status = AllChem.MMFFOptimizeMolecule(mol)
-    if optimization_status != 0:
-        print("[Warning] Force field optimization did not fully converge. Docking will still proceed.")
-        
-    # Prepare the ligand for AutoDock Vina using Meeko
+        conf_ids = [0]
+
+    # MMFF94-optimise every conformer and keep the lowest-energy geometry
+    best_cid = conf_ids[0]
+    try:
+        results = AllChem.MMFFOptimizeMoleculeConfs(mol)      # [(converged, energy), ...]
+        energies = [(cid, e) for cid, (_conv, e) in zip(conf_ids, results)]
+        best_cid = min(energies, key=lambda t: t[1])[0]
+    except Exception:
+        print("[Warning] Conformer optimisation skipped; using the first conformer.")
+
+    # Keep ONLY the best conformer for Meeko
+    best_mol = Chem.Mol(mol)
+    best_mol.RemoveAllConformers()
+    best_mol.AddConformer(mol.GetConformer(best_cid), assignId=True)
+
     preparator = MoleculePreparation()
-    mol_setups = preparator.prepare(mol)
-    
+    mol_setups = preparator.prepare(best_mol)
     if not mol_setups:
         raise RuntimeError("Meeko preparation failed: No setups generated.")
-        
-    # Write to PDBQT format
+
     pdbqt_string, is_ok, error_msg = PDBQTWriterLegacy.write_string(mol_setups[0])
     if not is_ok:
         raise RuntimeError(f"Meeko writing to PDBQT string failed: {error_msg}")
-        
+
     with open(output_pdbqt_path, 'w') as f:
         f.write(pdbqt_string)
-        
     print(f"[Prep] Prepared ligand saved to: {output_pdbqt_path}")
 
-def run_docking(vina_path, receptor_pdbqt, ligand_pdbqt, output_pdbqt, config_path, center, size):
+def run_docking(vina_path, receptor_pdbqt, ligand_pdbqt, output_pdbqt, config_path,
+                center, size, exhaustiveness=16, num_modes=9, energy_range=3.0,
+                seed=42, cpu=None):
     """
     Writes a configuration file for AutoDock Vina and runs the docking simulation.
-    - center: tuple of (x, y, z) representing the center coordinates of the search space box.
-    - size: tuple of (x, y, z) representing the dimensions of the search space box.
+    - center / size: (x, y, z) of the search-box centre and dimensions.
+    - exhaustiveness: search depth (Vina default 8; we default to 16 for accuracy).
+    - num_modes / energy_range: how many poses to keep and the energy window.
+    - seed: FIXED so a given input always reproduces the same result (reproducibility
+      is an industrial-standard requirement).
     """
     print(f"[Dock] Creating Vina configuration file: {config_path}")
-    
+
     # Grid Box settings: In drug discovery, the grid box center and size define the search space.
     # We restrict search to the active site to find the most therapeutic binding conformation.
     config_content = f"""receptor = {receptor_pdbqt}
@@ -213,8 +244,14 @@ size_x = {size[0]}
 size_y = {size[1]}
 size_z = {size[2]}
 
-out = {output_pdbqt}
+exhaustiveness = {int(exhaustiveness)}
+num_modes = {int(num_modes)}
+energy_range = {energy_range}
+seed = {int(seed)}
 """
+    if cpu:
+        config_content += f"cpu = {int(cpu)}\n"
+    config_content += f"out = {output_pdbqt}\n"
     with open(config_path, 'w') as f:
         f.write(config_content)
 
@@ -283,6 +320,119 @@ def parse_docking_results(log_path):
     best_mode, best_score = scores[0]
     print(f"[Results] Best Docking Score (Mode {best_mode}): {best_score} kcal/mol")
     return best_score, scores
+
+
+def dock_with_replicas(vina_path, receptor_pdbqt, ligand_pdbqt, out_prefix, cfg_prefix,
+                       center, size, exhaustiveness=16, n_replicas=1, base_seed=42,
+                       num_modes=9):
+    """
+    Run Vina n_replicas times with DIFFERENT seeds to measure reproducibility/precision.
+    Returns a dict:
+      best_score : most-negative best affinity across replicas (the reported hit)
+      modes      : all poses of that best replica
+      out_pdbqt  : the best replica's output file (used for interactions + 3D view)
+      mean, sd   : mean and standard deviation of the per-replica best affinity
+      n          : number of replicas actually run
+      confidence : "High"/"Medium"/"Lower" from the spread (or "Single run")
+    """
+    import statistics
+    n_replicas = max(1, int(n_replicas))
+    runs, bests = [], []
+    for i in range(n_replicas):
+        outp = f"{out_prefix}_r{i}.pdbqt"
+        cfg = f"{cfg_prefix}_r{i}.txt"
+        log = run_docking(vina_path, receptor_pdbqt, ligand_pdbqt, outp, cfg,
+                          center, size, exhaustiveness=exhaustiveness,
+                          num_modes=num_modes, seed=base_seed + i)
+        best, modes = parse_docking_results(log)
+        runs.append((best, modes, outp))
+        bests.append(best)
+
+    best_run = min(runs, key=lambda r: r[0])
+    mean = sum(bests) / len(bests)
+    sd = statistics.pstdev(bests) if len(bests) > 1 else 0.0
+    if len(bests) == 1:
+        confidence = "Single run"
+    elif sd <= 0.5:
+        confidence = "High"
+    elif sd <= 1.0:
+        confidence = "Medium"
+    else:
+        confidence = "Lower"
+    return {"best_score": best_run[0], "modes": best_run[1], "out_pdbqt": best_run[2],
+            "mean": round(mean, 3), "sd": round(sd, 3), "n": len(bests),
+            "confidence": confidence, "all_best": bests}
+
+
+def validate_native_redock(raw_pdb_path, receptor_pdbqt, vina, center, size, data_dir,
+                           exhaustiveness=16, seed=42):
+    """
+    GOLD-STANDARD validation. If the target structure carries a co-crystallised ligand,
+    re-dock THAT ligand into the same box and measure how close the predicted pose is to
+    the experimental one (heavy-atom RMSD, no alignment — same receptor frame).
+    RMSD < 2.0 Å is the accepted "correct redocking" threshold — direct evidence the
+    docking setup reproduces reality on this target.
+
+    Returns {"rmsd": float, "resname": str, "passed": bool} or None if there is no usable
+    co-crystal ligand or the check can't be completed (always non-fatal).
+    """
+    try:
+        from openbabel import pybel
+        from rdkit import Chem
+        from rdkit.Chem import AllChem, rdMolAlign
+
+        NOT_LIG = {"HOH", "WAT", "SOL", "DOD", "TIP", "CL", "NA", "K", "MG", "CA", "ZN",
+                   "MN", "SO4", "PO4", "ACT", "GOL", "EDO", "PEG", "DMS", "IOD", "BR",
+                   "FMT", "NO3"}
+        groups = {}
+        with open(raw_pdb_path) as f:
+            for ln in f:
+                if ln.startswith("HETATM"):
+                    resn = ln[17:20].strip()
+                    if resn in NOT_LIG:
+                        continue
+                    groups.setdefault((resn, ln[21], ln[22:26].strip()), []).append(ln)
+        if not groups:
+            return None
+        (resn, _, _), lines = max(groups.items(), key=lambda kv: len(kv[1]))
+        if len(lines) < 6:
+            return None
+
+        native_block = "".join(lines)
+        native_pdb = os.path.join(data_dir, "_native_lig.pdb")
+        with open(native_pdb, "w") as f:
+            f.write(native_block + "END\n")
+
+        # Perceive the native ligand's bonds → SMILES (the molecule we will re-dock)
+        obmol = next(pybel.readfile("pdb", native_pdb))
+        smiles = obmol.write("smi").split()[0]
+        template = Chem.MolFromSmiles(smiles)
+        if template is None:
+            return None
+        template = Chem.RemoveHs(template)
+
+        native_noH = Chem.RemoveHs(Chem.MolFromPDBBlock(native_block, sanitize=False))
+        native_fixed = AllChem.AssignBondOrdersFromTemplate(template, native_noH)
+
+        # Re-dock the native ligand into the prepared receptor
+        ligf = os.path.join(data_dir, "_native_lig.pdbqt")
+        prepare_ligand(smiles, ligf, seed=seed)
+        res = dock_with_replicas(vina, receptor_pdbqt, ligf,
+                                 os.path.join(data_dir, "_native_out"),
+                                 os.path.join(data_dir, "_native_cfg"),
+                                 center, size, exhaustiveness=exhaustiveness,
+                                 n_replicas=1, base_seed=seed)
+
+        pose = next(pybel.readfile("pdbqt", res["out_pdbqt"]))   # best pose
+        docked_noH = Chem.RemoveHs(Chem.MolFromPDBBlock(pose.write("pdb"), sanitize=False))
+        docked_fixed = AllChem.AssignBondOrdersFromTemplate(template, docked_noH)
+
+        rmsd = rdMolAlign.CalcRMS(docked_fixed, native_fixed)    # no alignment: same box frame
+        return {"rmsd": round(float(rmsd), 2), "resname": resn, "passed": bool(rmsd < 2.0)}
+    except Exception as e:
+        print(f"[Validate] native redock skipped: {e}")
+        return None
+
 
 def main():
     """

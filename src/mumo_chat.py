@@ -375,8 +375,19 @@ def run_pipeline(status_area):
                             "n_hydrophobic": int(top["Hydrophobic"]),
                             "interacting_residues": _sp(top["All interacting residues"])},
                            _llm, ss.results["tier"])
+        msd = top.get("Mean ± SD (kcal/mol)", "—")
+        rep_note = (f" (mean ± SD {msd}, confidence {top.get('Confidence','—')})"
+                    if msd and msd != "—" else "")
+        val = meta.get("validation")
+        val_note = ""
+        if val:
+            verdict = "<2 Å — setup validated" if val["passed"] else ">2 Å — interpret with care"
+            val_note = (f" Setup validation: native ligand {val['resname']} redocked to "
+                        f"{val['rmsd']} Å RMSD ({verdict}).")
         say(f"Done. Best hit **{top['Ligand']}** at **{top['Best affinity (kcal/mol)']} "
-            f"kcal/mol** against {meta['gene']}. Full results & 3D pose are below.\n\n{rep}")
+            f"kcal/mol**{rep_note} against {meta['gene']} "
+            f"[exhaustiveness {meta.get('exhaustiveness','?')}, {meta.get('replicas','?')} replica(s)].{val_note} "
+            f"Full results & 3D pose are below.\n\n{rep}")
     else:
         say("The docking didn't produce a valid pose — see the results below.")
     ss.convo = {}   # reset for the next, independent request

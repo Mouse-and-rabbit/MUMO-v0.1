@@ -12,7 +12,7 @@ import os
 from agents.target_analyst import analyze_target
 from agents.interaction_analyst import analyze_interactions
 from docking_engine import (clean_protein_pdb, prepare_receptor,
-                            prepare_ligand, run_docking, parse_docking_results)
+                            prepare_ligand, dock_with_replicas, validate_native_redock)
 
 
 def resolve_receptor(tgt, data_dir):
@@ -23,12 +23,19 @@ def resolve_receptor(tgt, data_dir):
     return info["pdb_path"], info["center"], info["size"], info["pocket_source"]
 
 
-def dock_pipeline(tgt, ligands, vina, data_dir, venv_dir, status=lambda m: None):
+def dock_pipeline(tgt, ligands, vina, data_dir, venv_dir, status=lambda m: None,
+                  exhaustiveness=16, n_replicas=3, seed=42):
     """
     Prepare the receptor once and dock every ligand.
-    Returns (rows, viz) where:
-      rows = list of result dicts (one per ligand)
-      viz  = {ligand_label: {complex path, interaction lines/residues}}
+
+    Accuracy strategy (industrial-standard, but cloud-friendly):
+      • A FOCUSED single-ligand dock runs deep (exhaustiveness 16) and is repeated
+        across `n_replicas` seeds → reproducible best score reported as mean ± SD
+        with a confidence flag.
+      • A multi-ligand BATCH screen runs fast (exhaustiveness 8, 1 replica) so a
+        whole shortlist still finishes quickly; promote a hit, then re-dock it alone.
+
+    Returns (rows, viz, meta).
     """
     status(f"Building the {tgt['gene']} structure and finding its pocket…")
     pdb_path, center, size, pocket = resolve_receptor(tgt, data_dir)
@@ -37,7 +44,20 @@ def dock_pipeline(tgt, ligands, vina, data_dir, venv_dir, status=lambda m: None)
     receptor = os.path.join(data_dir, "c_receptor.pdbqt")
     clean_protein_pdb(pdb_path, cleaned)
     prepare_receptor(cleaned, receptor, venv_dir)
-    status(f"Receptor ready ({pocket}). Docking {len(ligands)} ligand(s)…")
+
+    single = len(ligands) == 1
+    eff_rep = max(1, n_replicas) if single else 1
+    eff_exh = exhaustiveness if single else min(exhaustiveness, 8)
+    status(f"Receptor ready ({pocket}). Docking {len(ligands)} ligand(s) "
+           f"— exhaustiveness {eff_exh}, {eff_rep} replica(s)…")
+
+    # Gold-standard validation: if the structure has a co-crystal ligand, redock it
+    # and report RMSD to the real pose (only experimental complexes — not AlphaFold).
+    validation = None
+    if "co-crystal" in pocket.lower():
+        status("Validating setup: re-docking the native co-crystal ligand…")
+        validation = validate_native_redock(pdb_path, receptor, vina, center, size,
+                                            data_dir, exhaustiveness=eff_exh, seed=seed)
 
     rows, viz = [], {}
     for k, lig in enumerate(ligands):
@@ -45,16 +65,19 @@ def dock_pipeline(tgt, ligands, vina, data_dir, venv_dir, status=lambda m: None)
         status(f"Docking {label} ({k+1}/{len(ligands)})…")
         try:
             ligf = os.path.join(data_dir, f"c_lig_{k}.pdbqt")
-            outp = os.path.join(data_dir, f"c_out_{k}.pdbqt")
-            cfg  = os.path.join(data_dir, f"c_cfg_{k}.txt")
             cmplx = os.path.join(data_dir, f"c_complex_{k}.pdb")
-            prepare_ligand(lig["smiles"], ligf)
-            logp = run_docking(vina, receptor, ligf, outp, cfg, center, size)
-            best, modes = parse_docking_results(logp)
+            prepare_ligand(lig["smiles"], ligf, seed=seed)
+            res = dock_with_replicas(
+                vina, receptor, ligf,
+                os.path.join(data_dir, f"c_out_{k}"), os.path.join(data_dir, f"c_cfg_{k}"),
+                center, size, exhaustiveness=eff_exh, n_replicas=eff_rep, base_seed=seed)
+            best, modes, outp = res["best_score"], res["modes"], res["out_pdbqt"]
             ia = analyze_interactions(cleaned, outp, cmplx)
             rows.append({
                 "Ligand": label, "SMILES": lig["smiles"],
-                "Best affinity (kcal/mol)": best, "Poses": len(modes),
+                "Best affinity (kcal/mol)": best,
+                "Mean ± SD (kcal/mol)": (f"{res['mean']} ± {res['sd']}" if eff_rep > 1 else "—"),
+                "Confidence": res["confidence"], "Poses": len(modes),
                 "Total interactions": ia["total_interactions"], "H-bonds": ia["n_hbonds"],
                 "H-bond residues": "; ".join(ia["hbond_residues"]) or "-",
                 "Hydrophobic": ia["n_hydrophobic"], "Pi-stack": ia["n_pistacking"],
@@ -68,4 +91,6 @@ def dock_pipeline(tgt, ligands, vina, data_dir, venv_dir, status=lambda m: None)
             rows.append({"Ligand": label, "SMILES": lig["smiles"],
                          "Best affinity (kcal/mol)": "FAILED", "Poses": 0,
                          "Total interactions": str(le)[:40]})
-    return rows, viz, {"gene": tgt["gene"], "center": center, "pocket": pocket}
+    return rows, viz, {"gene": tgt["gene"], "center": center, "pocket": pocket,
+                       "exhaustiveness": eff_exh, "replicas": eff_rep,
+                       "validation": validation}
