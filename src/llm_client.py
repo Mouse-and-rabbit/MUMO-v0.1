@@ -98,6 +98,24 @@ class LLM:
 
         raise ValueError(f"Unknown provider: {self.provider}")
 
+    def can_transcribe(self):
+        """Voice input is available on Groq (Whisper, free) and OpenAI."""
+        return self.provider in ("groq", "openai")
+
+    def transcribe(self, audio_bytes, filename="speech.wav"):
+        """Speech -> text. Uses Whisper on Groq (free) or OpenAI. Returns the transcript."""
+        if not self.can_transcribe():
+            raise ValueError("Voice input needs a Groq or OpenAI key.")
+        url = ("https://api.groq.com/openai/v1/audio/transcriptions" if self.provider == "groq"
+               else "https://api.openai.com/v1/audio/transcriptions")
+        model = "whisper-large-v3" if self.provider == "groq" else "whisper-1"
+        r = requests.post(url, timeout=60,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            files={"file": (filename, audio_bytes, "audio/wav")},
+            data={"model": model, "response_format": "text"})
+        r.raise_for_status()
+        return r.text.strip()
+
 
 def get_llm():
     """Return a ready LLM, or None if no key is configured (→ rule-based fallback)."""
